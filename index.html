@@ -1,1 +1,366 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover"/>
+  <title>SaaS POS · Punto de Venta</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.0/css/all.min.css"/>
+  <style>
+    body { font-family: 'Segoe UI', system-ui, sans-serif; overscroll-behavior: none; }
+    /* Animaciones y utilidades de interfaz */
+    .fade-in { animation: fadeIn 0.3s ease-in-out; }
+    @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
+    ::-webkit-scrollbar { width: 4px; height: 4px; }
+    ::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 4px; }
+  </style>
+</head>
+<body class="bg-slate-100 overflow-hidden flex flex-col h-screen">
 
+  <!-- ▌PANTALLA DE BLOQUEO SAAS (Pago Vencido) ▐ -->
+  <div id="saasBlocker" class="hidden fixed inset-0 z-[999] bg-slate-900 flex-col items-center justify-center text-white p-6 text-center fade-in">
+    <div class="w-20 h-20 bg-rose-500/20 rounded-full flex items-center justify-center mb-6">
+      <i class="fa-solid fa-lock text-4xl text-rose-500"></i>
+    </div>
+    <h1 class="text-3xl font-black mb-2">Suscripción Inactiva</h1>
+    <p class="text-slate-300 max-w-md mb-6 leading-relaxed">
+      El acceso a este entorno está temporalmente suspendido. Por favor, regulariza el pago de la mensualidad para restablecer el servicio a todas tus sucursales.
+    </p>
+    <button onclick="logout()" class="bg-slate-800 hover:bg-slate-700 text-white px-6 py-3 rounded-xl font-bold transition">
+      Cerrar sesión
+    </button>
+  </div>
+
+  <!-- ▌NAVBAR ▐ -->
+  <nav class="h-14 bg-indigo-700 text-white flex items-center justify-between px-4 shadow-lg shrink-0 z-40">
+    <div class="flex items-center gap-2">
+      <span class="text-2xl">🏪</span>
+      <span id="businessNameLabel" class="font-bold text-base tracking-tight">SaaS POS</span>
+      <span id="roleTag" class="text-xs bg-white/15 border border-white/20 px-2 py-0.5 rounded-full hidden"></span>
+    </div>
+    <div class="flex items-center gap-2">
+      <button id="navLoginBtn" onclick="showLoginModal()" class="bg-white/20 hover:bg-white/30 px-3 py-1.5 rounded-lg text-sm font-medium transition">
+        Iniciar Sesión
+      </button>
+      <div id="navUserArea" class="hidden flex items-center gap-3">
+        <span id="navUserName" class="text-sm font-medium text-indigo-100"></span>
+        <button onclick="logout()" class="bg-rose-500 hover:bg-rose-600 p-1.5 rounded-lg transition" title="Cerrar sesión">
+          <i class="fa-solid fa-right-from-bracket"></i>
+        </button>
+      </div>
+    </div>
+  </nav>
+
+  <!-- ▌MAIN LAYOUT ▐ -->
+  <div class="flex-1 flex overflow-hidden">
+    
+    <!-- LEFT: POS & SEARCH -->
+    <div class="flex-1 flex flex-col min-w-0 bg-slate-50 relative">
+      <!-- Search Bar -->
+      <div class="bg-white border-b border-slate-200 px-4 py-3 shadow-sm shrink-0">
+        <div class="relative">
+          <i class="fa-solid fa-magnifying-glass absolute left-4 top-1/2 -translate-y-1/2 text-slate-400"></i>
+          <input id="searchInput" type="text" placeholder="Buscar producto, variante o servicio..."
+            class="w-full pl-11 pr-4 py-3 bg-slate-100 border-transparent rounded-xl text-sm focus:bg-white focus:border-indigo-500 focus:ring-2 focus:ring-indigo-200 transition">
+        </div>
+      </div>
+
+      <!-- Products Grid (Catálogo Dinámico) -->
+      <div class="flex-1 overflow-y-auto p-4">
+        <div id="productsGrid" class="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-3">
+          <p class="col-span-full text-center text-slate-400 py-10">Inicia sesión para cargar el catálogo de tu negocio.</p>
+        </div>
+      </div>
+    </div>
+
+    <!-- RIGHT: CARRITO CON ATRIBUCIÓN (COMISIONES) -->
+    <div class="w-80 lg:w-96 bg-white border-l border-slate-200 flex flex-col shadow-xl shrink-0 z-30">
+      <div class="px-4 py-3 border-b border-slate-100 flex items-center justify-between shrink-0 bg-slate-50">
+        <h2 class="font-bold text-slate-800"><i class="fa-solid fa-cart-shopping text-indigo-500 mr-2"></i>Carrito</h2>
+        <span id="cartCount" class="bg-indigo-100 text-indigo-700 text-xs font-bold px-2.5 py-1 rounded-full">0</span>
+      </div>
+      
+      <div id="cartItemsList" class="flex-1 overflow-y-auto p-3 space-y-2 bg-slate-50">
+        <div class="text-center text-slate-300 py-10 text-sm">Carrito vacío</div>
+      </div>
+
+      <div class="px-4 py-4 border-t border-slate-200 bg-white shrink-0">
+        <div class="flex justify-between items-center mb-4">
+          <span class="font-bold text-slate-500">Total</span>
+          <span id="cartTotal" class="font-black text-2xl text-indigo-700">$0.00</span>
+        </div>
+        <button id="checkoutBtn" disabled class="w-full bg-emerald-600 hover:bg-emerald-700 disabled:bg-slate-200 disabled:text-slate-400 text-white py-3.5 rounded-xl font-bold text-sm transition">
+          Cobrar Venta
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ▌MODAL LOGIN ▐ -->
+  <div id="loginModal" class="hidden fixed inset-0 z-[60] flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
+    <div class="bg-white rounded-2xl shadow-2xl p-6 w-full max-w-sm fade-in">
+      <div class="text-center mb-6">
+        <i class="fa-solid fa-fingerprint text-4xl text-indigo-500 mb-2"></i>
+        <h2 class="text-xl font-black text-slate-800">Acceso al Sistema</h2>
+      </div>
+      <div class="space-y-4">
+        <input id="loginEmail" type="email" placeholder="Correo electrónico" class="w-full border border-slate-200 rounded-xl px-4 py-3 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 bg-slate-50">
+        <input id="loginPwd" type="password" placeholder="Contraseña" class="w-full border border-slate-200 rounded-xl px-4 py-3 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 bg-slate-50">
+        <p id="loginErr" class="text-rose-500 text-xs font-semibold hidden text-center"></p>
+        <button onclick="doLogin()" class="w-full bg-indigo-600 hover:bg-indigo-700 text-white py-3 rounded-xl font-bold transition">
+          Entrar
+        </button>
+        <button onclick="document.getElementById('loginModal').classList.add('hidden')" class="w-full text-slate-400 hover:text-slate-600 text-sm py-2">Cancelar</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ▌MODULAR FIREBASE (v10) & APP LOGIC ▐ -->
+  <script type="module">
+    import { initializeApp } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-app.js";
+    import { getAuth, signInWithEmailAndPassword, signOut, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-auth.js";
+    import { getFirestore, doc, getDoc, collection, onSnapshot, query, where, addDoc } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-firestore.js";
+
+    // 1. Configuración de tu SaaS
+    const firebaseConfig = {
+      apiKey: "AIzaSyApjuFDv4F4-tHG_taxbmgBrkYrFRFlCo4",
+      authDomain: "saas-fa00f.firebaseapp.com",
+      projectId: "saas-fa00f",
+      storageBucket: "saas-fa00f.firebasestorage.app",
+      messagingSenderId: "783638109709",
+      appId: "1:783638109709:web:d0cf49849771e48a227f44"
+    };
+
+    const app = initializeApp(firebaseConfig);
+    const auth = getAuth(app);
+    const db = getFirestore(app);
+
+    // 2. Contexto Global del SaaS
+    window.SaaSContext = {
+      tenantId: null,
+      businessName: null,
+      role: null,
+      staff: [] // Para barberías: Lista de empleados para asignar comisiones
+    };
+
+    let unsubProducts = null;
+    let catalog = [];
+    let cart = [];
+
+    // 3. Enrutamiento Multi-tenant
+    onAuthStateChanged(auth, async (user) => {
+      if (user) {
+        document.getElementById('navLoginBtn').classList.add('hidden');
+        document.getElementById('navUserArea').classList.remove('hidden');
+        document.getElementById('navUserName').textContent = user.email;
+
+        // Paso A: Leer en qué negocio trabaja este usuario
+        const userRef = doc(db, "usuarios_globales", user.uid);
+        const userSnap = await getDoc(userRef);
+
+        if (userSnap.exists()) {
+          const uData = userSnap.data();
+          window.SaaSContext.tenantId = uData.tenantId;
+          window.SaaSContext.role = uData.rol;
+
+          // Paso B: Validar el estado de pago del negocio
+          const tenantRef = doc(db, "negocios", window.SaaSContext.tenantId);
+          const tenantSnap = await getDoc(tenantRef);
+
+          if (tenantSnap.exists()) {
+            const tData = tenantSnap.data();
+            
+            // LÓGICA DE BLOQUEO SAAS
+            if (tData.status_pago !== 'activo') {
+              document.getElementById('saasBlocker').classList.remove('hidden');
+              document.getElementById('saasBlocker').classList.add('flex');
+              return; // Detenemos la carga del POS
+            }
+
+            // Negocio Activo: Configurar UI
+            window.SaaSContext.businessName = tData.nombre;
+            document.getElementById('businessNameLabel').textContent = tData.nombre;
+            
+            const roleTag = document.getElementById('roleTag');
+            roleTag.textContent = window.SaaSContext.role === 'owner' ? 'Dueño' : 'Vendedor';
+            roleTag.classList.remove('hidden');
+
+            // Cargar Catálogo Específico de este Tenant
+            cargarCatalogoSaaS();
+            // Cargar staff (Para comisiones de barberías)
+            cargarStaff();
+          }
+        }
+      } else {
+        // Reset UI si cierra sesión
+        document.getElementById('navLoginBtn').classList.remove('hidden');
+        document.getElementById('navUserArea').classList.add('hidden');
+        document.getElementById('saasBlocker').classList.add('hidden');
+        document.getElementById('saasBlocker').classList.remove('flex');
+        document.getElementById('roleTag').classList.add('hidden');
+        document.getElementById('businessNameLabel').textContent = 'SaaS POS';
+        if(unsubProducts) unsubProducts();
+        catalog = [];
+        cart = [];
+        renderProducts();
+        renderCart();
+      }
+    });
+
+    // 4. Catálogo Aislado (Multi-tenant)
+    function cargarCatalogoSaaS() {
+      // Ruta blindada: negocios/{tenantId}/productos
+      const catalogRef = collection(db, "negocios", window.SaaSContext.tenantId, "productos");
+      
+      unsubProducts = onSnapshot(catalogRef, (snapshot) => {
+        catalog = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+        renderProducts();
+      });
+    }
+
+    function cargarStaff() {
+      // Ruta para obtener a los barberos/vendedores y poder asignarles la venta en el carrito
+      const staffRef = collection(db, "negocios", window.SaaSContext.tenantId, "staff");
+      onSnapshot(staffRef, (snapshot) => {
+        window.SaaSContext.staff = snapshot.docs.map(doc => ({ id: doc.id, name: doc.data().nombre }));
+        renderCart(); // Actualiza los selects del carrito si cambió el staff
+      });
+    }
+
+    // 5. Renderizado de Productos (Soporte para Variantes)
+    window.renderProducts = function() {
+      const grid = document.getElementById('productsGrid');
+      if (!catalog.length) {
+        grid.innerHTML = '<p class="col-span-full text-center text-slate-400 py-10">No hay productos en tu catálogo.</p>';
+        return;
+      }
+
+      grid.innerHTML = catalog.map(p => {
+        const hasVariants = p.variantes && p.variantes.length > 0;
+        return `
+          <div class="bg-white p-4 rounded-xl shadow-sm border border-slate-100 flex flex-col justify-between hover:shadow-md transition cursor-pointer" 
+               onclick="handleProductClick('${p.id}', ${hasVariants})">
+            <div>
+              <p class="text-xs text-slate-400 font-mono mb-1">${p.codigo || 'Sin código'}</p>
+              <h3 class="font-bold text-slate-800 leading-tight">${p.nombre}</h3>
+              ${hasVariants ? `<span class="text-[10px] bg-indigo-100 text-indigo-600 px-2 py-0.5 rounded-full mt-1 inline-block">${p.variantes.length} Variantes</span>` : ''}
+            </div>
+            <div class="mt-3 text-right">
+              <span class="font-black text-indigo-600 text-lg">$${parseFloat(p.precio).toFixed(2)}</span>
+            </div>
+          </div>
+        `;
+      }).join('');
+    };
+
+    window.handleProductClick = function(id, hasVariants) {
+      const prod = catalog.find(x => x.id === id);
+      if(hasVariants) {
+        // En tu MVP real, aquí abrirías un Modal para elegir "Talla M / Color Rojo"
+        alert(`Abrir modal de variantes para: ${prod.nombre}`);
+      } else {
+        addToCart(prod);
+      }
+    };
+
+    // 6. Carrito con Atribución de Ventas (Para cálculo de comisiones)
+    window.addToCart = function(prod) {
+      const existing = cart.find(x => x.id === prod.id);
+      if (existing) {
+        existing.qty += 1;
+      } else {
+        cart.push({
+          id: prod.id,
+          nombre: prod.nombre,
+          precio: prod.precio,
+          qty: 1,
+          // Propiedad clave para SaaS de servicios: Quién ejecutó el servicio
+          attributedTo: window.SaaSContext.user.uid 
+        });
+      }
+      renderCart();
+    };
+
+    window.updateAttribution = function(itemId, staffId) {
+      const item = cart.find(x => x.id === itemId);
+      if(item) item.attributedTo = staffId;
+    };
+
+    window.renderCart = function() {
+      const list = document.getElementById('cartItemsList');
+      const totalEl = document.getElementById('cartTotal');
+      const btn = document.getElementById('checkoutBtn');
+      const countEl = document.getElementById('cartCount');
+      
+      let total = 0;
+      let qtyTotal = 0;
+
+      if (!cart.length) {
+        list.innerHTML = '<div class="text-center text-slate-300 py-10 text-sm">Carrito vacío</div>';
+        totalEl.textContent = '$0.00';
+        btn.disabled = true;
+        countEl.textContent = '0';
+        return;
+      }
+
+      // Opciones de staff para el select
+      const staffOptions = window.SaaSContext.staff.map(s => `<option value="${s.id}">${s.name}</option>`).join('');
+
+      list.innerHTML = cart.map(item => {
+        const subtotal = item.precio * item.qty;
+        total += subtotal;
+        qtyTotal += item.qty;
+
+        return `
+          <div class="bg-white p-3 rounded-xl border border-slate-200 shadow-sm">
+            <div class="flex justify-between items-start mb-2">
+              <h4 class="text-sm font-semibold text-slate-800">${item.nombre}</h4>
+              <span class="font-black text-indigo-700">$${subtotal.toFixed(2)}</span>
+            </div>
+            
+            <div class="flex items-center justify-between mt-2 pt-2 border-t border-slate-50">
+              <div class="flex items-center bg-slate-100 rounded-lg">
+                <button class="px-2 py-1 text-slate-500 font-bold hover:text-indigo-600">-</button>
+                <span class="px-2 text-xs font-bold w-6 text-center">${item.qty}</span>
+                <button class="px-2 py-1 text-slate-500 font-bold hover:text-indigo-600">+</button>
+              </div>
+              
+              <!-- Atribución de Venta (Fundamental para Barberías) -->
+              <select onchange="updateAttribution('${item.id}', this.value)" class="text-xs border border-slate-200 rounded-lg px-2 py-1 bg-slate-50 text-slate-600 focus:outline-none">
+                <option value="${window.SaaSContext.user?.uid}">Atribuir a mí</option>
+                ${staffOptions}
+              </select>
+            </div>
+          </div>
+        `;
+      }).join('');
+
+      totalEl.textContent = `$${total.toFixed(2)}`;
+      countEl.textContent = qtyTotal;
+      btn.disabled = false;
+    };
+
+    // 7. Funciones Globales para UI interactiva
+    window.showLoginModal = () => document.getElementById('loginModal').classList.remove('hidden');
+    
+    window.doLogin = async () => {
+      const e = document.getElementById('loginEmail').value;
+      const p = document.getElementById('loginPwd').value;
+      const err = document.getElementById('loginErr');
+      try {
+        await signInWithEmailAndPassword(auth, e, p);
+        document.getElementById('loginModal').classList.add('hidden');
+        err.classList.add('hidden');
+      } catch (error) {
+        err.textContent = "Error: Verifica tus credenciales.";
+        err.classList.remove('hidden');
+      }
+    };
+
+    window.logout = async () => {
+      await signOut(auth);
+    };
+
+  </script>
+</body>
+</html>
