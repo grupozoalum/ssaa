@@ -1696,10 +1696,12 @@
       <h3 class="font-black text-slate-800 text-lg">¡Venta registrada!</h3>
     </div>
     <div id="receiptPrintArea" class="bg-white p-4 font-black text-black text-base mb-4">
-  <p class="text-center font-black text-black text-base mb-2">🏪 LA RANCHERITA</p>
-  <div id="receiptItemsEl" class="space-y-1 mb-2 border-b border-dashed border-black pb-2"></div>
+  <p id="rcStoreEl" class="text-center font-black text-black text-base leading-tight"></p>
+  <p id="rcBranchEl" class="hidden text-center font-bold text-black text-sm leading-tight"></p>
+  <p id="rcMetaEl" class="text-center font-normal text-black text-xs mb-2 leading-tight"></p>
+  <div id="receiptItemsEl" class="space-y-1 my-2 border-t border-b border-dashed border-black py-2"></div>
   <div id="receiptTotalsEl" class="space-y-1"></div>
-  <p class="text-center font-black text-black text-base mt-3">¡Gracias por su compra!</p>
+  <p id="rcFooterEl" class="text-center font-black text-black text-base mt-3"></p>
 </div>
     <div class="grid grid-cols-2 gap-2 mb-2">
       <button onclick="shareReceipt()" class="bg-emerald-600 hover:bg-emerald-700 text-white py-3 rounded-xl font-semibold text-sm min-h-[48px]"><i class="fa-brands fa-whatsapp mr-1.5"></i>Compartir</button>
@@ -1885,7 +1887,7 @@
   <div class="px-6 sm:px-10 py-6 flex items-center justify-between shrink-0">
     <div class="flex items-center gap-3">
       <span class="text-3xl">🏪</span>
-      <span class="font-bold text-lg sm:text-xl tracking-tight">Tienda</span>
+      <span id="cdStoreName" class="font-bold text-lg sm:text-xl tracking-tight truncate max-w-[60vw]">Tienda</span>
     </div>
     <div id="cdClock" class="text-white/60 text-sm font-mono tabular-nums"></div>
   </div>
@@ -1896,7 +1898,7 @@
     </div>
     <div id="cdThankYou" class="hidden h-full flex flex-col items-center justify-center text-center">
       <div class="text-7xl mb-4">🎉</div>
-      <p class="text-2xl sm:text-3xl font-black mb-2">¡Gracias por su compra!</p>
+      <p id="cdThankYouMsg" class="text-2xl sm:text-3xl font-black mb-2">¡Gracias por su compra!</p>
       <p id="cdThankYouTotal" class="text-4xl sm:text-5xl font-black text-emerald-400 cd-total"></p>
     </div>
     <div id="cdItemsArea" class="hidden max-w-2xl mx-auto py-4 space-y-2"></div>
@@ -2375,15 +2377,12 @@ auth.onAuthStateChanged(async user => {
   S.isAdmin  = isAdminUid(user?.uid);
   S.isSeller = !!(user && !S.isAdmin);
 
-  if(user && !S.isAdmin){
-    const doc = await db.collection('users').doc(user.uid).get().catch(()=>null);
-    if(doc?.exists && doc.data().active === false){
-      await auth.signOut();
-      showToast('Tu cuenta está desactivada. Contacta al administrador.','error');
-      return;
-    }
-    S.userBranchId = doc?.data()?.branchId || null;
-    S.userBranchName = doc?.data()?.branchName || null;
+  if(user && PERFIL){
+    /* La sucursal ya viene en la ficha que leímos al resolver el negocio.
+       Aplica igual al dueño: su ticket también debe decir de qué sucursal
+       salió, no quedarse sin rótulo. */
+    S.userBranchId   = PERFIL.branchId   || null;
+    S.userBranchName = PERFIL.branchName || null;
   } else {
     S.userBranchId = null; S.userBranchName = null;
   }
@@ -2425,6 +2424,7 @@ auth.onAuthStateChanged(async user => {
   updateBranchTag();
   aplicarModulos();
   aplicarBranding();
+  if(!S.isAdmin) closeAdmin();
 });
 
 /* ════════════════════════════════════════════════════════
@@ -2550,10 +2550,44 @@ function aplicarModulos(){
   });
 }
 
+/* ── De dónde sale el nombre en TODAS partes ──────────────
+   Un solo lugar lo decide. Si mañana cambias el rótulo del
+   negocio desde tu panel, cambia en el ticket, en la impresora,
+   en el WhatsApp y en la pantalla al cliente sin tocar nada más. */
+function nombreNegocio(){
+  return (NEGOCIO && NEGOCIO.nombre) || 'Punto de venta';
+}
+function nombreSucursal(){
+  return S.userBranchName || '';
+}
+function pieDeTicket(){
+  return (NEGOCIO && NEGOCIO.configuracion && NEGOCIO.configuracion.ticket_pie)
+         || '¡Gracias por su compra!';
+}
+/* Para reimprimir tickets viejos usamos lo que quedó guardado en la venta,
+   no el nombre de hoy: si el negocio se renombró, el ticket sigue siendo fiel. */
+function encabezadoTicket(venta){
+  return {
+    negocio : (venta && venta.storeName)  || nombreNegocio(),
+    sucursal: (venta && venta.branchName) || nombreSucursal()
+  };
+}
+
 function aplicarBranding(){
+  const nom = nombreNegocio();
+  const suc = nombreSucursal();
+
   const marca = g('brandName');
-  if(marca) marca.textContent = (NEGOCIO && NEGOCIO.nombre) ? NEGOCIO.nombre : 'Punto de venta';
-  if(NEGOCIO && NEGOCIO.nombre) document.title = 'POS · ' + NEGOCIO.nombre;
+  if(marca) marca.textContent = nom;
+
+  /* Pantalla al cliente */
+  const cd = g('cdStoreName');
+  if(cd) cd.textContent = suc ? nom + ' · ' + suc : nom;
+
+  const cdGracias = g('cdThankYouMsg');
+  if(cdGracias) cdGracias.textContent = pieDeTicket();
+
+  document.title = 'POS · ' + nom;
 }
 
 /* ════════════════════════════════════════════════════════
@@ -3324,7 +3358,10 @@ async function printEscPos(sale){
   const d = new Date();
   const fecha = d.toLocaleDateString('es-MX',{day:'2-digit',month:'2-digit',year:'2-digit'})
               + ' ' + d.toLocaleTimeString('es-MX',{hour:'2-digit',minute:'2-digit'});
-  await writeToPrinter(prnCenter('TIENDA POS'), prnCenter(fecha), prnLine());
+  const enc = encabezadoTicket(sale);
+  await writeToPrinter(prnCenter(enc.negocio.toUpperCase()));
+  if(enc.sucursal) await writeToPrinter(prnCenter(enc.sucursal));
+  await writeToPrinter(prnCenter(fecha), prnLine());
   for(const it of sale.items){
     await writeToPrinter(prnItem(it));
   }
@@ -3332,7 +3369,7 @@ async function printEscPos(sale){
   await writeToPrinter(prnRow('Subtot', fmt(sale.subtotal)));
   if(sale.discountAmt) await writeToPrinter(prnRow('Desc', '-'+fmt(sale.discountAmt)));
   await writeToPrinter(prnRow('TOTAL', fmt(sale.total)));
-  await writeToPrinter(prnLine(), prnCenter('Gracias!'), ESC.FEED, ESC.CUT);
+  await writeToPrinter(prnLine(), prnCenter(pieDeTicket()), ESC.FEED, ESC.CUT);
 }
 
 async function testPrint(){
@@ -3842,6 +3879,7 @@ async function processPayment(){
       change:S.payMethod==='cash'?Math.max(0,paid-total):0,
       sellerId:S.user.uid,
       sellerName:S.user.displayName||S.user.email,
+      storeName: nombreNegocio(),
       branchId:S.userBranchId||null,
       branchName:S.userBranchName||null,
       shiftId:S.currentShift?.id||null,
@@ -3900,6 +3938,17 @@ async function processPayment(){
 let _lastReceipt=null;
 function showReceiptModal(sale){
   _lastReceipt=sale;
+  /* Encabezado: negocio, sucursal, fecha y quién atendió */
+  const enc = encabezadoTicket(sale);
+  g('rcStoreEl').textContent = '🏪 ' + enc.negocio.toUpperCase();
+  const suc = g('rcBranchEl');
+  suc.textContent = enc.sucursal;
+  suc.classList.toggle('hidden', !enc.sucursal);
+  const cuando = new Date(sale.tsISO || Date.now());
+  g('rcMetaEl').textContent =
+    cuando.toLocaleString('es-MX',{dateStyle:'short',timeStyle:'short'})
+    + (sale.sellerName ? ' · ' + sale.sellerName : '');
+  g('rcFooterEl').textContent = pieDeTicket();
   g('receiptItemsEl').innerHTML = sale.items.map(it=>
     `<div class="flex justify-between font-black text-black text-base"><span>${esc(it.name)} ×${it.quantity}</span><span>${fmt(it.subtotal)}</span></div>`
   ).join('');
@@ -3916,12 +3965,16 @@ function showReceiptModal(sale){
 }
 function hideReceiptModal(){ g('receiptModal').classList.add('hidden'); }
 function receiptText(sale){
-  const lines=[`🏪 Tienda POS`,`Vendedor: ${sale.sellerName||''}`,``];
+  const enc = encabezadoTicket(sale);
+  const lines=[`🏪 ${enc.negocio}`];
+  if(enc.sucursal) lines.push(enc.sucursal);
+  lines.push(`Vendedor: ${sale.sellerName||''}`,``);
   sale.items.forEach(it=>lines.push(`${it.name} ×${it.quantity} — ${fmt(it.subtotal)}`));
   lines.push('');
   if(sale.discountAmt) lines.push(`Descuento: -${fmt(sale.discountAmt)}`);
   lines.push(`Total: ${fmt(sale.total)}`);
-  lines.push(`¡Gracias por su compra!`);
+  lines.push('');
+  lines.push(pieDeTicket());
   return lines.join('\n');
 }
 function shareReceipt(){
@@ -3939,6 +3992,14 @@ function printReceipt(){
    ADMIN
 ════════════════════════════════════ */
 function openAdmin(){
+  /* Solo el dueño. El rol lo definiste tú al dar de alta el negocio;
+     aquí no hay forma de ascenderse. Y si alguien llama esta función
+     desde la consola, igual no pasa: las reglas no le entregan datos. */
+  if(!S.isAdmin){
+    showToast('Tu cuenta es de vendedor. El panel es solo del dueño.','error');
+    g('adminPanel').classList.add('hidden');
+    return;
+  }
   g('adminPanel').classList.remove('hidden');
   g('cartFab').classList.add('hidden'); // Ocultar burbuja del carrito en Admin
   g('adminEmailLabel').textContent=S.user?.email||'';
@@ -3951,6 +4012,7 @@ function closeAdmin(){
 }
 
 function switchTab(tab){
+  if(!S.isAdmin){ closeAdmin(); return; }
   /* Desktop sidebar */
   document.querySelectorAll('.atab').forEach(b=>b.classList.remove('on'));
   g('tab-'+tab)?.classList.add('on');
@@ -4525,6 +4587,7 @@ async function openShift(){
   const now=new Date();
   const data={
     sellerId:S.user.uid, sellerName:S.user.displayName||S.user.email,
+    storeName: nombreNegocio(),
     branchId:S.userBranchId||null, branchName:S.userBranchName||null,
     openingCash:amt, cashSales:0, cardSales:0, totalSales:0, salesCount:0, cashOut:0,
     status:'open', openISO:now.toISOString(), date:localDateStr(now)
@@ -4621,7 +4684,10 @@ async function showShiftDetail(id){
     sales=snap.docs.map(d=>d.data()).filter(x=>!x.voided);
   }catch(e){ console.warn(e.message); }
   try{
-    const snap=await db.collection('expenses').where('shiftId','==',id).get();
+    /* Igual que con las ventas: el vendedor solo alcanza sus propios gastos. */
+    let qe = db.collection('expenses').where('shiftId','==',id);
+    if(!S.isAdmin && S.user) qe = qe.where('userId','==',S.user.uid);
+    const snap=await qe.get();
     exps=snap.docs.map(d=>d.data());
   }catch(e){ console.warn(e.message); }
   const cogs=sales.reduce((a,x)=>a+(x.cost!=null?x.cost:sumItemsCost(x.items)),0);
