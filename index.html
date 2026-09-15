@@ -1942,9 +1942,9 @@
     <i id="gateIcon" class="fa-solid fa-lock text-5xl mb-4"></i>
     <h2 id="gateTitle" class="text-xl font-black text-slate-800"></h2>
     <p id="gateMsg" class="text-slate-500 text-sm mt-2 leading-relaxed"></p>
-    <button onclick="gateSalir()" class="mt-6 w-full bg-slate-900 hover:bg-slate-800 text-white py-3 rounded-xl font-bold text-sm">
-      Cerrar sesión
-    </button>
+    <div id="gateActions" class="mt-6 space-y-2">
+      <button onclick="gateSalir()" class="w-full bg-slate-900 hover:bg-slate-800 text-white py-3 rounded-xl font-bold text-sm">Cerrar sesión</button>
+    </div>
   </div>
 </div>
 
@@ -1952,13 +1952,13 @@
 <script>
 /* ── Firebase ── */
 const FC = {
-  apiKey:"AIzaSyApjuFDv4F4-tHG_taxbmgBrkYrFRFlCo4",
-  authDomain:"saas-fa00f.firebaseapp.com",
-  projectId:"saas-fa00f",
-  storageBucket:"saas-fa00f.firebasestorage.app",
-  messagingSenderId:"783638109709",
-  appId:"1:783638109709:web:d0cf49849771e48a227f44",
-  measurementId:"G-C2V3JD3DXF"
+  apiKey: "AIzaSyCNWsowcsixY7I4JDuOzoQfu3Jdx9UFGNQ",
+  authDomain: "doc-con-ia.firebaseapp.com",
+  projectId: "doc-con-ia",
+  storageBucket: "doc-con-ia.firebasestorage.app",
+  messagingSenderId: "952895131866",
+  appId: "1:952895131866:web:3b456da32f0567891295e3",
+  measurementId: "G-DGX8B7G5XY"
 };
 firebase.initializeApp(FC);
 const auth   = firebase.auth();
@@ -2492,6 +2492,17 @@ async function resolverNegocio(user){
         'El servicio de '+nom+' está pausado por falta de pago. Se reactiva en cuanto se regularice.');
     }
 
+    /* Cada giro tiene su propio punto de venta. Si este negocio está
+       marcado como barbería, no es aquí donde debe entrar. */
+    const tipo = (NEGOCIO.configuracion && NEGOCIO.configuracion.tipo_pos) || 'tienda';
+    if(tipo === 'barberia'){
+      return bloquearAcceso('fa-shuffle text-indigo-500','Este negocio usa el punto de venta de barbería',
+        'Te mandamos al que le corresponde.', [
+          {texto:'Ir al POS de barbería', accion:"location.href='barberia.html'", estilo:'bg-slate-900 text-white'},
+          {texto:'Cerrar sesión', accion:'gateSalir()', estilo:'bg-slate-100 text-slate-600'}
+        ]);
+    }
+
     cerrarPuerta();
     arrancarDatosDelNegocio();
     return true;
@@ -2600,12 +2611,15 @@ function mostrarPuertaLogin(){
   setTimeout(()=>{ const e=g('gateEmail'); if(e) e.focus(); },200);
 }
 
-function bloquearAcceso(icono, titulo, mensaje){
+function bloquearAcceso(icono, titulo, mensaje, acciones){
   g('gateLogin').classList.add('hidden');
   g('gateBlock').classList.remove('hidden');
   g('gateIcon').className = 'fa-solid ' + icono + ' text-5xl mb-4';
   g('gateTitle').textContent = titulo;
   g('gateMsg').textContent = mensaje;
+  g('gateActions').innerHTML = (acciones && acciones.length)
+    ? acciones.map(a=>`<button onclick="${a.accion}" class="w-full ${a.estilo} py-3 rounded-xl font-bold text-sm">${a.texto}</button>`).join('')
+    : '<button onclick="gateSalir()" class="w-full bg-slate-900 hover:bg-slate-800 text-white py-3 rounded-xl font-bold text-sm">Cerrar sesión</button>';
   g('saasGate').classList.remove('hidden');
   return false;
 }
