@@ -2020,7 +2020,8 @@ const dbRoot = firebase.firestore();
 const FS     = firebase.firestore;
 
 /* ════════════════════════════════════════════════════════
-   CATÁLOGO MAESTRO: productos/{codigoDeBarras} → { nombre }
+   CATÁLOGO MAESTRO: productos/{codigoDeBarras} →
+     { nombre, marca, contenido, cantidad, unidad }
    Vive en el mismo proyecto que el resto del SaaS, así que se lee
    con la MISMA conexión (y la misma sesión) que todo lo demás.
    Las reglas piden sesión iniciada para leer 'productos'.
@@ -2028,7 +2029,38 @@ const FS     = firebase.firestore;
    un código: 1 lectura por consulta, nunca los 16 mil de golpe.
 ════════════════════════════════════════════════════════ */
 const catalogoDb  = dbRoot;
-const _catalogoCache = new Map();   // código → nombre | null
+const _catalogoCache = new Map();   // código → ficha | null
+
+/* Convierte un documento del catálogo en una ficha uniforme.
+   Tolera documentos viejos que solo traen "nombre". */
+function fichaCatalogo(codigo, d){
+  if(!d) return null;
+  const txt = v => (v===undefined || v===null) ? '' : String(v).trim();
+  const nombre = txt(d.nombre);
+  if(!nombre) return null;
+  const marca = txt(d.marca);
+  const unidad = txt(d.unidad);
+  const cantidad = (typeof d.cantidad==='number' && isFinite(d.cantidad)) ? d.cantidad
+                 : (parseFloat(d.cantidad) || null);
+  const contenido = txt(d.contenido) || (cantidad && unidad ? cantidad + unidad : '');
+  return { codigo, nombre, marca, contenido, cantidad, unidad };
+}
+
+/* Nombre listo para vender: agrega marca y contenido si el nombre no los trae.
+   "Skipper Arancia senza zuccheri aggiunti" → "Zuegg Skipper Arancia senza zuccheri aggiunti 700ml" */
+function nombreParaVenta(f){
+  if(!f) return '';
+  const low = f.nombre.toLowerCase();
+  let n = f.nombre;
+  if(f.marca && !low.includes(f.marca.toLowerCase())) n = f.marca + ' ' + n;
+  if(f.contenido && !low.replace(/\s+/g,'').includes(f.contenido.toLowerCase().replace(/\s+/g,''))) n = n + ' ' + f.contenido;
+  return n;
+}
+
+/* "Zuegg · 700ml" */
+function detalleCatalogo(f){
+  return f ? [f.marca, f.contenido].filter(Boolean).join(' · ') : '';
+}
 
 /* Variantes del código: los lectores a veces quitan o agregan el 0
    inicial (UPC-A de 12 dígitos vs EAN-13 de 13). */
@@ -2042,23 +2074,23 @@ function variantesCodigo(code){
   return [...new Set(v)];
 }
 
-/* Devuelve el nombre del producto en el catálogo, o null si no existe. */
+/* Devuelve la ficha del producto en el catálogo, o null si no existe. */
 async function buscarEnCatalogo(code){
   const c = String(code||'').trim();
   if(!c || c.includes('/')) return null;
   if(_catalogoCache.has(c)) return _catalogoCache.get(c);
-  let nombre = null;
+  let ficha = null;
   try{
     for(const id of variantesCodigo(c)){
       const doc = await catalogoDb.collection('productos').doc(id).get();
-      if(doc.exists && doc.data().nombre){ nombre = String(doc.data().nombre).trim(); break; }
+      if(doc.exists){ ficha = fichaCatalogo(doc.id, doc.data()); if(ficha) break; }
     }
   }catch(e){
     console.warn('Catálogo no disponible:', e.code||e.message);
     return null;   // no se guarda en caché para reintentar después
   }
-  _catalogoCache.set(c, nombre);
-  return nombre;
+  _catalogoCache.set(c, ficha);
+  return ficha;
 }
 
 /* Rellena el nombre en el formulario de producto si está vacío
@@ -2071,12 +2103,13 @@ async function autollenarNombreDesdeCatalogo(){
   if(g('pf_name').value.trim() && !_pfNombreDelCatalogo) return;
   hint.textContent = 'Buscando en el catálogo…';
   hint.className = 'text-[11px] text-slate-400 mt-1';
-  const nombre = await buscarEnCatalogo(code);
+  const ficha = await buscarEnCatalogo(code);
   if(g('pf_barcode').value.trim() !== code) return;   // el código cambió mientras buscaba
-  if(nombre){
-    g('pf_name').value = nombre;
+  if(ficha){
+    g('pf_name').value = nombreParaVenta(ficha);
     _pfNombreDelCatalogo = true;
-    hint.textContent = 'Nombre tomado del catálogo. Puedes cambiarlo.';
+    const det = detalleCatalogo(ficha);
+    hint.textContent = 'Tomado del catálogo' + (det ? ' (' + det + ')' : '') + '. Puedes cambiarlo.';
     hint.className = 'text-[11px] text-emerald-600 mt-1';
   }else{
     if(_pfNombreDelCatalogo){ g('pf_name').value=''; _pfNombreDelCatalogo=false; }
@@ -3002,9 +3035,11 @@ function showProduct(p){
 function showNotFound(code){
   g('notFoundCode').textContent = 'Código: '+code;
   hide('notFoundCatalog');
-  buscarEnCatalogo(code).then(nombre=>{
-    if(!nombre || g('notFoundCode').textContent !== 'Código: '+code) return;
-    g('notFoundCatalogName').textContent = nombre;
+  buscarEnCatalogo(code).then(ficha=>{
+    if(!ficha || g('notFoundCode').textContent !== 'Código: '+code) return;
+    const det = detalleCatalogo(ficha);
+    g('notFoundCatalogName').innerHTML = esc(ficha.nombre)
+      + (det ? '<span class="block text-[11px] font-normal text-slate-500">'+esc(det)+'</span>' : '');
     show('notFoundCatalog');
   });
   show('stateNotFound'); hide('stateProduct'); hide('stateWelcome'); hide('stateLoading');
@@ -4504,7 +4539,7 @@ function filterProdTable(){
   });
   tbody.innerHTML=list.slice(desde, desde+PAGE_SIZE).map(p=>`<tr class="hover:bg-slate-50 transition">
     <td class="px-3 sm:px-4 py-3"><code class="text-xs bg-slate-100 px-1.5 py-0.5 rounded text-slate-600">${esc(p.barcode)}</code></td>
-    <td class="px-3 sm:px-4 py-3 font-semibold text-slate-800 text-xs sm:text-sm max-w-[180px] break-anywhere">${p.favorite?'<i class="fa-solid fa-star text-amber-400 text-[10px] mr-1"></i>':''}${esc(p.name)}${expiryChip(p)}</td>
+    <td class="px-3 sm:px-4 py-3 font-semibold text-slate-800 text-xs sm:text-sm max-w-[180px] break-anywhere">${p.favorite?'<i class="fa-solid fa-star text-amber-400 text-[10px] mr-1"></i>':''}${esc(p.name)}${expiryChip(p)}${(p.marca||p.contenido)?`<span class="block text-[10px] font-normal text-slate-400">${esc([p.marca,p.contenido].filter(Boolean).join(' · '))}</span>`:''}</td>
     <td class="px-3 sm:px-4 py-3 text-right font-bold text-indigo-700 text-xs sm:text-sm whitespace-nowrap num">${fmt(p.price)}</td>
     <td class="px-3 sm:px-4 py-3 text-right text-xs text-slate-500 hidden lg:table-cell whitespace-nowrap num">${p.cost?fmt(p.cost):'<span class="text-slate-300">—</span>'}</td>
     <td class="px-3 sm:px-4 py-3 text-right text-xs hidden lg:table-cell">${p.cost?`<span class="font-bold ${(p.price-p.cost)>=0?'text-emerald-600':'text-red-500'}">${fmt(p.price-p.cost)}</span><span class="text-slate-400 block text-[10px]">${p.price?(((p.price-p.cost)/p.price)*100).toFixed(0):0}%</span>`:'<span class="text-slate-300">—</span>'}</td>
@@ -4556,33 +4591,57 @@ function setProdView(v){
   if(v==='catalog' && !CAT.cargado) cargarPaginaCatalogo(0);
 }
 
-/* Código (solo dígitos) → busca por inicio del código de barras.
-   Texto → busca por inicio del nombre (los nombres están en MAYÚSCULAS). */
-function consultaCatalogo(cursor){
-  const ref = dbRoot.collection('productos');
-  const q = CAT.q;
-  let consulta, inicio;
-  if(!q){ consulta = ref.orderBy(FS.FieldPath.documentId()); }
-  else if(/^\d+$/.test(q)){ consulta = ref.orderBy(FS.FieldPath.documentId()).endAt(q+'\uf8ff'); inicio = q; }
-  else { const Q = q.toUpperCase(); consulta = ref.orderBy('nombre').endAt(Q+'\uf8ff'); inicio = Q; }
-  /* Un solo punto de inicio: la página anterior o el texto buscado */
-  if(cursor) return consulta.startAfter(cursor);
-  return inicio !== undefined ? consulta.startAt(inicio) : consulta;
+/* Firestore distingue mayúsculas, y los nombres vienen escritos de muchas
+   formas ("Skipper…", "SKIPPER…", "skipper…"). Por eso un texto se busca en
+   varias formas a la vez y los resultados se combinan en orden.
+   Un código (solo dígitos) se busca tal cual por el inicio del código. */
+function formasDeBusqueda(q){
+  if(/^\d+$/.test(q)) return [q];
+  const low = q.toLowerCase();
+  const cap = low.charAt(0).toUpperCase() + low.slice(1);
+  const titulo = low.replace(/(^|\s)(\S)/g, (m,sp,ch)=>sp+ch.toUpperCase());
+  return [...new Set([q, cap, titulo, q.toUpperCase(), low])];
 }
+function consultaPorForma(forma, cursor){
+  const ref = dbRoot.collection('productos');
+  const porCodigo = /^\d+$/.test(forma);
+  let consulta = porCodigo ? ref.orderBy(FS.FieldPath.documentId()) : ref.orderBy('nombre');
+  if(forma) consulta = consulta.endAt(forma+'\uf8ff');
+  /* Un solo punto de inicio: donde se quedó la página anterior, o el texto buscado */
+  if(cursor) return consulta.startAfter(cursor);
+  return forma ? consulta.startAt(forma) : consulta;
+}
+const claveOrden = (d, porCodigo) => porCodigo ? d.id : String(d.data().nombre||'');
 
 async function cargarPaginaCatalogo(pagina){
   const seq = ++CAT.seq;
   CAT.cargado = true;
   g('catTableBody').innerHTML='<tr><td colspan="3" class="text-center py-10 text-slate-400"><i class="fa-solid fa-spinner fa-spin mr-2"></i>Cargando…</td></tr>';
   try{
-    const consulta = consultaCatalogo(pagina>0 ? CAT.cursores[pagina-1] : null);
-    const snap = await consulta.limit(PAGE_SIZE+1).get();
+    const formas = CAT.q ? formasDeBusqueda(CAT.q) : [''];
+    const porCodigo = !CAT.q || /^\d+$/.test(CAT.q);
+    /* cursores[p] = { forma: últimoDocumentoMostrado } al terminar la página p */
+    const previos = pagina>0 ? (CAT.cursores[pagina-1] || {}) : {};
+    const lotes = await Promise.all(formas.map(f =>
+      consultaPorForma(f, previos[f] || null).limit(PAGE_SIZE+1).get()
+        .then(snap => snap.docs.map(d => ({forma:f, d})))
+    ));
     if(seq!==CAT.seq) return;                       // llegó una búsqueda más nueva
-    const docs = snap.docs.slice(0, PAGE_SIZE);
+
+    const vistos = new Set();
+    const todos = lotes.flat()
+      .filter(x => !vistos.has(x.d.id) && vistos.add(x.d.id))
+      .sort((x,y)=>{ const a=claveOrden(x.d,porCodigo), b=claveOrden(y.d,porCodigo); return a<b?-1:a>b?1:0; });
+    const pag = todos.slice(0, PAGE_SIZE);
+
+    const siguientes = {...previos};
+    pag.forEach(x => { siguientes[x.forma] = x.d; });
+    CAT.cursores[pagina] = siguientes;
     CAT.pagina = pagina;
-    CAT.hayMas = snap.docs.length > PAGE_SIZE;
-    if(docs.length) CAT.cursores[pagina] = docs[docs.length-1];
-    docs.forEach(d=>{ const n=d.data().nombre; if(n) _catalogoCache.set(d.id, String(n).trim()); });
+    CAT.hayMas = todos.length > PAGE_SIZE;
+
+    const docs = pag.map(x => x.d);
+    docs.forEach(d => { if(!_catalogoCache.has(d.id)) _catalogoCache.set(d.id, fichaCatalogo(d.id, d.data())); });
     CAT.docs = docs;
     renderCatalogRows(docs);
   }catch(e){
@@ -4606,7 +4665,9 @@ function renderCatalogRows(docs){
     g('catPager').innerHTML=''; return;
   }
   tbody.innerHTML = docs.map(d=>{
-    const nombre = d.data().nombre || '';
+    const f = fichaCatalogo(d.id, d.data());
+    const nombre = f ? f.nombre : '';
+    const det = detalleCatalogo(f);
     const mio = S.products.find(p=>p.barcode===d.id);
     const accion = mio
       ? `<span class="text-xs font-bold text-indigo-700 num mr-1">${fmt(mio.price)}</span>
@@ -4614,7 +4675,10 @@ function renderCatalogRows(docs){
       : `<button data-code="${esc(d.id)}" onclick="addFromCatalog(this.dataset.code)" class="bg-indigo-50 hover:bg-indigo-100 text-indigo-700 text-xs font-semibold px-3 py-1.5 rounded-lg min-h-[32px]"><i class="fa-solid fa-plus mr-1"></i>Agregar</button>`;
     return `<tr class="hover:bg-slate-50 transition">
       <td class="px-3 sm:px-4 py-3"><code class="text-xs bg-slate-100 px-1.5 py-0.5 rounded text-slate-600">${esc(d.id)}</code></td>
-      <td class="px-3 sm:px-4 py-3 font-semibold text-slate-800 text-xs sm:text-sm break-anywhere">${esc(nombre)}</td>
+      <td class="px-3 sm:px-4 py-3 text-xs sm:text-sm break-anywhere">
+        <span class="font-semibold text-slate-800">${esc(nombre)}</span>
+        ${det?`<span class="block text-[11px] text-slate-400 mt-0.5">${esc(det)}</span>`:''}
+      </td>
       <td class="px-3 sm:px-4 py-3 text-right whitespace-nowrap">${accion}</td>
     </tr>`;
   }).join('');
@@ -4684,6 +4748,14 @@ async function saveProduct(){
   }
   
   const data={name,price,stock,category,favorite,isBulk,active:true,updatedAt:FS.FieldValue.serverTimestamp()};
+  /* Si el código viene del catálogo, se guardan sus datos de referencia */
+  const fichaCat = _catalogoCache.get(barcode);
+  if(fichaCat){
+    data.marca = fichaCat.marca || '';
+    data.contenido = fichaCat.contenido || '';
+    if(fichaCat.cantidad!=null) data.cantidad = fichaCat.cantidad;
+    if(fichaCat.unidad) data.unidad = fichaCat.unidad;
+  }
   /* Precio de adquisición: SOLO el administrador puede fijarlo */
   if(S.isAdmin){
     const cost=parseFloat(g('pf_cost').value);
@@ -5419,9 +5491,10 @@ function lookupEntryProduct(){
     window._pendingBarcode=code;
     beep('error');
     g('ie_catalogName').classList.add('hidden');
-    buscarEnCatalogo(code).then(nombre=>{
-      if(!nombre || g('ie_barcode').value.trim()!==code) return;
-      g('ie_catalogName').innerHTML='En el catálogo: <b>'+esc(nombre)+'</b>';
+    buscarEnCatalogo(code).then(ficha=>{
+      if(!ficha || g('ie_barcode').value.trim()!==code) return;
+      const det = detalleCatalogo(ficha);
+      g('ie_catalogName').innerHTML='En el catálogo: <b>'+esc(ficha.nombre)+'</b>'+(det?' · '+esc(det):'');
       g('ie_catalogName').classList.remove('hidden');
     });
     return;
