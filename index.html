@@ -1993,24 +1993,14 @@ const dbRoot = firebase.firestore();
 const FS     = firebase.firestore;
 
 /* ════════════════════════════════════════════════════════
-   CATÁLOGO MAESTRO (proyecto saas-2c4ef)
-   Base de datos aparte con ~16 mil productos:
-   productos/{codigoDeBarras} → { nombre }
-   Solo se LEE, documento por documento, cuando se escanea o
-   se escribe un código. Así cada consulta cuesta 1 lectura y
-   nunca se descargan los 16 mil productos de golpe.
+   CATÁLOGO MAESTRO: productos/{codigoDeBarras} → { nombre }
+   Vive en el mismo proyecto que el resto del SaaS, así que se lee
+   con la MISMA conexión (y la misma sesión) que todo lo demás.
+   Las reglas piden sesión iniciada para leer 'productos'.
+   Se lee documento por documento, cuando se escanea o se escribe
+   un código: 1 lectura por consulta, nunca los 16 mil de golpe.
 ════════════════════════════════════════════════════════ */
-const CATALOGO_CONFIG = {
-  apiKey: "AIzaSyCiSLtAQTFre5eqj5tB9lIOj97EKeKGQcg",
-  authDomain: "saas-2c4ef.firebaseapp.com",
-  projectId: "saas-2c4ef",
-  storageBucket: "saas-2c4ef.firebasestorage.app",
-  messagingSenderId: "790186047116",
-  appId: "1:790186047116:web:5a490e45382c4c6c846da9",
-  measurementId: "G-VRGTHDL06T"
-};
-const catalogoApp = firebase.initializeApp(CATALOGO_CONFIG, 'catalogo');
-const catalogoDb  = catalogoApp.firestore();
+const catalogoDb  = dbRoot;
 const _catalogoCache = new Map();   // código → nombre | null
 
 /* Variantes del código: los lectores a veces quitan o agregan el 0
