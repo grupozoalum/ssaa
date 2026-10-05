@@ -766,8 +766,13 @@
         </button>
         </div>
       </div>
+      <div class="flex gap-1 p-1 bg-slate-100 rounded-xl mb-3 sm:inline-flex">
+        <button id="pvMine" onclick="setProdView('mine')" class="flex-1 sm:flex-none px-4 py-2 rounded-lg text-sm font-semibold text-slate-500 min-h-[40px]">Mis productos <span id="pvMineCount" class="font-normal"></span></button>
+        <button id="pvCatalog" onclick="setProdView('catalog')" class="flex-1 sm:flex-none px-4 py-2 rounded-lg text-sm font-semibold text-slate-500 min-h-[40px]">Catálogo general</button>
+      </div>
+      <div id="myProdPanel">
       <div class="flex gap-2 mb-3">
-        <input id="prodFilter" type="text" placeholder="Buscar productos…" oninput="filterProdTable()"
+        <input id="prodFilter" type="text" placeholder="Buscar productos…" oninput="S.prodPage=0;filterProdTable()"
           class="flex-1 border border-slate-200 rounded-xl px-4 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500">
         <button id="lowStockBtn" onclick="toggleLowStockFilter()" class="shrink-0 border border-slate-200 bg-white text-slate-500 px-3 py-2.5 rounded-xl text-xs font-semibold whitespace-nowrap transition min-h-[44px]">
           <i class="fa-solid fa-triangle-exclamation mr-1"></i><span class="hidden sm:inline">Stock bajo</span>
@@ -793,6 +798,28 @@
             </tbody>
           </table>
         </div>
+      </div>
+        <div id="prodPager" class="mt-3"></div>
+      </div>
+      <div id="catalogPanel" class="hidden">
+        <input id="catFilter" type="text" placeholder="Busca por código o por cómo empieza el nombre" oninput="onCatalogFilter()"
+          class="w-full border border-slate-200 rounded-xl px-4 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 mb-1.5">
+        <p class="text-[11px] text-slate-400 mb-3">Agrega a tu tienda los productos que vendes y ponles precio.</p>
+        <div class="bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden">
+          <div class="table-scroll">
+            <table class="w-full text-sm min-w-[360px]">
+              <thead class="bg-slate-50 border-b border-slate-200">
+                <tr>
+                  <th class="text-left px-3 sm:px-4 py-3 text-slate-500 font-semibold text-xs sm:text-sm">Código</th>
+                  <th class="text-left px-3 sm:px-4 py-3 text-slate-500 font-semibold text-xs sm:text-sm">Nombre</th>
+                  <th class="text-right px-3 sm:px-4 py-3 text-slate-500 font-semibold text-xs sm:text-sm">En tu tienda</th>
+                </tr>
+              </thead>
+              <tbody id="catTableBody" class="divide-y divide-slate-100"></tbody>
+            </table>
+          </div>
+        </div>
+        <div id="catPager" class="mt-3"></div>
       </div>
     </div>
 
@@ -2902,7 +2929,8 @@ async function doSearch(queryOverride){
   const q = raw.toLowerCase();
 
   /* 1. Exact barcode */
-  let match = S.products.find(p => p.barcode === raw && p.active !== false);
+  const variantes = variantesCodigo(raw);
+  let match = S.products.find(p => variantes.includes(p.barcode) && p.active !== false);
 
   /* 2. Barcode partial / name includes (case-insensitive) */
   if(!match){
@@ -4432,12 +4460,16 @@ async function loadProducts(){
   try{
     const snap=await db.collection('products').orderBy('name').get();
     S.products=snap.docs.map(d=>({barcode:d.id,...d.data()})); // refresh cache
+    if(!S.prodView) setProdView(S.products.length ? 'mine' : 'catalog');
     filterProdTable();
     updateStockBell();
-  }catch(e){ filterProdTable(); showToast('Mostrando productos guardados en el dispositivo','warning'); }
+  }catch(e){
+    if(!S.prodView) setProdView(S.products.length ? 'mine' : 'catalog');
+    filterProdTable(); showToast('Mostrando productos guardados en el dispositivo','warning');
+  }
 }
 function toggleLowStockFilter(){
-  S.lowStockOnly=!S.lowStockOnly;
+  S.lowStockOnly=!S.lowStockOnly; S.prodPage=0;
   g('lowStockBtn').className='shrink-0 border px-3 py-2.5 rounded-xl text-xs font-semibold whitespace-nowrap transition min-h-[44px] '+
     (S.lowStockOnly?'border-red-300 bg-red-50 text-red-600':'border-slate-200 bg-white text-slate-500');
   filterProdTable();
@@ -4449,12 +4481,28 @@ function stockBadge(p){
   return `<span class="text-xs px-2 py-0.5 rounded-full font-medium badge-ok">${p.stock}</span>`;
 }
 function filterProdTable(){
+  g('pvMineCount').textContent = S.products.length ? '('+S.products.length+')' : '';
+  if(S.prodView==='catalog' && CAT.docs) renderCatalogRows(CAT.docs);   // refresca "En tu tienda"
   const q=g('prodFilter').value.toLowerCase();
   let list=S.products.filter(p=>(p.name||'').toLowerCase().includes(q)||(p.barcode||'').toLowerCase().includes(q));
   if(S.lowStockOnly) list=list.filter(p=>typeof p.stock==='number' && p.stock<=LOW_STOCK_THRESHOLD);
   const tbody=g('prodTableBody');
-  if(!list.length){tbody.innerHTML='<tr><td colspan="8" class="py-8 text-center text-slate-400">Sin resultados</td></tr>';return;}
-  tbody.innerHTML=list.map(p=>`<tr class="hover:bg-slate-50 transition">
+  if(!list.length){
+    tbody.innerHTML = S.products.length
+      ? '<tr><td colspan="8" class="py-8 text-center text-slate-400">Sin resultados</td></tr>'
+      : '<tr><td colspan="8" class="py-10 text-center text-slate-500">Todavía no tienes productos.<br><button onclick="setProdView(\'catalog\')" class="mt-2 text-indigo-600 font-semibold hover:underline">Buscar en el catálogo general</button></td></tr>';
+    g('prodPager').innerHTML=''; return;
+  }
+  const totalPag = Math.ceil(list.length/PAGE_SIZE);
+  if(S.prodPage>=totalPag) S.prodPage=totalPag-1;
+  if(S.prodPage<0) S.prodPage=0;
+  const desde = S.prodPage*PAGE_SIZE;
+  g('prodPager').innerHTML = pagerHTML({
+    texto: `${desde+1}–${Math.min(desde+PAGE_SIZE,list.length)} de ${list.length}`,
+    hayAnterior: S.prodPage>0, hayMas: S.prodPage<totalPag-1,
+    anterior: 'S.prodPage--;filterProdTable()', siguiente: 'S.prodPage++;filterProdTable()'
+  });
+  tbody.innerHTML=list.slice(desde, desde+PAGE_SIZE).map(p=>`<tr class="hover:bg-slate-50 transition">
     <td class="px-3 sm:px-4 py-3"><code class="text-xs bg-slate-100 px-1.5 py-0.5 rounded text-slate-600">${esc(p.barcode)}</code></td>
     <td class="px-3 sm:px-4 py-3 font-semibold text-slate-800 text-xs sm:text-sm max-w-[180px] break-anywhere">${p.favorite?'<i class="fa-solid fa-star text-amber-400 text-[10px] mr-1"></i>':''}${esc(p.name)}${expiryChip(p)}</td>
     <td class="px-3 sm:px-4 py-3 text-right font-bold text-indigo-700 text-xs sm:text-sm whitespace-nowrap num">${fmt(p.price)}</td>
@@ -4474,6 +4522,125 @@ function filterProdTable(){
     </td>
   </tr>`).join('');
 }
+/* ════════════════════════════════════
+   PRODUCTOS: "Mis productos" | "Catálogo general"
+   El catálogo (16 mil) se pide a Firestore de 20 en 20 con cursor:
+   cada página cuesta 21 lecturas, nunca se descarga completo.
+════════════════════════════════════ */
+const PAGE_SIZE = 20;
+S.prodPage = 0;
+S.prodView = null;
+const CAT = { q:'', cursores:[], pagina:0, hayMas:false, docs:null, cargado:false, timer:null, seq:0 };
+
+function pagerHTML({texto, hayAnterior, hayMas, anterior, siguiente}){
+  const base='px-3 py-2 rounded-lg text-sm font-semibold border min-h-[40px] transition';
+  const on = base+' border-slate-200 bg-white text-slate-700 hover:bg-slate-50';
+  const off= base+' border-slate-100 bg-slate-50 text-slate-300 cursor-not-allowed';
+  return `<div class="flex items-center justify-between gap-2">
+    <span class="text-xs text-slate-500">${texto}</span>
+    <div class="flex gap-2">
+      <button ${hayAnterior?`onclick="${anterior}"`:'disabled'} class="${hayAnterior?on:off}"><i class="fa-solid fa-chevron-left mr-1"></i>Anteriores</button>
+      <button ${hayMas?`onclick="${siguiente}"`:'disabled'} class="${hayMas?on:off}">Siguientes<i class="fa-solid fa-chevron-right ml-1"></i></button>
+    </div>
+  </div>`;
+}
+
+function setProdView(v){
+  S.prodView = v;
+  const on ='flex-1 sm:flex-none px-4 py-2 rounded-lg text-sm font-semibold bg-white text-indigo-700 shadow-sm min-h-[40px]';
+  const off='flex-1 sm:flex-none px-4 py-2 rounded-lg text-sm font-semibold text-slate-500 hover:text-slate-700 min-h-[40px]';
+  g('pvMine').className    = v==='mine'    ? on : off;
+  g('pvCatalog').className = v==='catalog' ? on : off;
+  g('myProdPanel').classList.toggle('hidden', v!=='mine');
+  g('catalogPanel').classList.toggle('hidden', v!=='catalog');
+  if(v==='catalog' && !CAT.cargado) cargarPaginaCatalogo(0);
+}
+
+/* Código (solo dígitos) → busca por inicio del código de barras.
+   Texto → busca por inicio del nombre (los nombres están en MAYÚSCULAS). */
+function consultaCatalogo(cursor){
+  const ref = dbRoot.collection('productos');
+  const q = CAT.q;
+  let consulta, inicio;
+  if(!q){ consulta = ref.orderBy(FS.FieldPath.documentId()); }
+  else if(/^\d+$/.test(q)){ consulta = ref.orderBy(FS.FieldPath.documentId()).endAt(q+'\uf8ff'); inicio = q; }
+  else { const Q = q.toUpperCase(); consulta = ref.orderBy('nombre').endAt(Q+'\uf8ff'); inicio = Q; }
+  /* Un solo punto de inicio: la página anterior o el texto buscado */
+  if(cursor) return consulta.startAfter(cursor);
+  return inicio !== undefined ? consulta.startAt(inicio) : consulta;
+}
+
+async function cargarPaginaCatalogo(pagina){
+  const seq = ++CAT.seq;
+  CAT.cargado = true;
+  g('catTableBody').innerHTML='<tr><td colspan="3" class="text-center py-10 text-slate-400"><i class="fa-solid fa-spinner fa-spin mr-2"></i>Cargando…</td></tr>';
+  try{
+    const consulta = consultaCatalogo(pagina>0 ? CAT.cursores[pagina-1] : null);
+    const snap = await consulta.limit(PAGE_SIZE+1).get();
+    if(seq!==CAT.seq) return;                       // llegó una búsqueda más nueva
+    const docs = snap.docs.slice(0, PAGE_SIZE);
+    CAT.pagina = pagina;
+    CAT.hayMas = snap.docs.length > PAGE_SIZE;
+    if(docs.length) CAT.cursores[pagina] = docs[docs.length-1];
+    docs.forEach(d=>{ const n=d.data().nombre; if(n) _catalogoCache.set(d.id, String(n).trim()); });
+    CAT.docs = docs;
+    renderCatalogRows(docs);
+  }catch(e){
+    if(seq!==CAT.seq) return;
+    console.error('Catálogo:', e);
+    CAT.cargado = false; CAT.docs = null;
+    const motivo = e.code==='permission-denied'
+      ? 'Las reglas de Firestore no permiten leer "productos". Publica el archivo firestore.rules.'
+      : 'No se pudo cargar el catálogo ('+esc(e.code||e.message)+').';
+    g('catTableBody').innerHTML='<tr><td colspan="3" class="text-center py-10 text-red-500 text-sm">'+motivo+'</td></tr>';
+    g('catPager').innerHTML='';
+  }
+}
+
+function renderCatalogRows(docs){
+  const tbody = g('catTableBody');
+  if(!docs.length){
+    tbody.innerHTML = '<tr><td colspan="3" class="text-center py-10 text-slate-400 text-sm">'
+      + (CAT.q ? 'Ningún producto empieza con «'+esc(CAT.q)+'». Prueba con el código o con la primera palabra del nombre.' : 'El catálogo está vacío.')
+      + '</td></tr>';
+    g('catPager').innerHTML=''; return;
+  }
+  tbody.innerHTML = docs.map(d=>{
+    const nombre = d.data().nombre || '';
+    const mio = S.products.find(p=>p.barcode===d.id);
+    const accion = mio
+      ? `<span class="text-xs font-bold text-indigo-700 num mr-1">${fmt(mio.price)}</span>
+         <button data-code="${esc(d.id)}" onclick="editProduct(this.dataset.code)" class="text-indigo-500 hover:text-indigo-700 text-sm p-1 min-w-[32px] min-h-[32px]" title="Editar"><i class="fa-solid fa-pen-to-square"></i></button>`
+      : `<button data-code="${esc(d.id)}" onclick="addFromCatalog(this.dataset.code)" class="bg-indigo-50 hover:bg-indigo-100 text-indigo-700 text-xs font-semibold px-3 py-1.5 rounded-lg min-h-[32px]"><i class="fa-solid fa-plus mr-1"></i>Agregar</button>`;
+    return `<tr class="hover:bg-slate-50 transition">
+      <td class="px-3 sm:px-4 py-3"><code class="text-xs bg-slate-100 px-1.5 py-0.5 rounded text-slate-600">${esc(d.id)}</code></td>
+      <td class="px-3 sm:px-4 py-3 font-semibold text-slate-800 text-xs sm:text-sm break-anywhere">${esc(nombre)}</td>
+      <td class="px-3 sm:px-4 py-3 text-right whitespace-nowrap">${accion}</td>
+    </tr>`;
+  }).join('');
+  const desde = CAT.pagina*PAGE_SIZE;
+  g('catPager').innerHTML = pagerHTML({
+    texto: `Página ${CAT.pagina+1} · ${desde+1}–${desde+docs.length}`,
+    hayAnterior: CAT.pagina>0, hayMas: CAT.hayMas,
+    anterior: `cargarPaginaCatalogo(${CAT.pagina-1})`, siguiente: `cargarPaginaCatalogo(${CAT.pagina+1})`
+  });
+}
+
+function onCatalogFilter(){
+  clearTimeout(CAT.timer);
+  CAT.timer = setTimeout(()=>{
+    CAT.q = g('catFilter').value.trim();
+    CAT.cursores = [];
+    cargarPaginaCatalogo(0);
+  }, 400);
+}
+
+/* Abre el alta con el código y el nombre del catálogo ya puestos */
+function addFromCatalog(code){
+  window._pendingBarcode = code;
+  showProductModal(true);
+}
+
 function showProductModal(fromScan=false){
   refreshCategoryList();
   g('productModalTitle').textContent='Agregar Producto';
