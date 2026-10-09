@@ -1,0 +1,139 @@
+*{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+body{font-family:'Segoe UI',system-ui,sans-serif;overscroll-behavior:none}
+/* Scanner line */
+.scan-line{position:absolute;left:0;right:0;height:2px;background:linear-gradient(90deg,transparent,#818cf8,transparent);
+  box-shadow:0 0 8px #818cf8;animation:scanMove 1.8s ease-in-out infinite;pointer-events:none;z-index:2}
+@keyframes scanMove{0%{top:10%;opacity:0}15%{opacity:1}85%{opacity:1}100%{top:80%;opacity:0}}
+/* Admin tabs */
+.atab{color:#6b7280;transition:all .15s;cursor:pointer}
+.atab:hover{background:#1f2937;color:#e5e7eb}
+.atab.on{background:#4f46e5;color:#fff}
+/* Mobile admin tabs */
+.matab{color:#9ca3af;white-space:nowrap;flex-shrink:0;border-bottom:2px solid transparent;transition:all .15s;cursor:pointer}
+.matab.on{color:#818cf8;border-bottom-color:#818cf8}
+/* Period btns */
+.pbtn{transition:all .15s;cursor:pointer}
+.pbtn.on{background:#4f46e5;color:#fff;border-color:#4f46e5}
+/* Scrollbar */
+::-webkit-scrollbar{width:4px;height:4px}
+::-webkit-scrollbar-thumb{background:#cbd5e1;border-radius:4px}
+/* Toast */
+#toast{transition:transform .35s cubic-bezier(.34,1.56,.64,1)}
+#toast.show{transform:translateX(0)!important}
+/* Bottom sheet overlay */
+#cartSheet{transition:transform .3s cubic-bezier(.4,0,.2,1)}
+#cartSheet.open{transform:translateY(0)!important}
+/* QR */
+#tqr img,#tqr canvas{width:76px!important;height:76px!important}
+/* Ensure buttons are big enough on mobile */
+button,input,select{touch-action:manipulation}
+
+/* ── UI/UX boost additions ── */
+@keyframes pulseAdd{0%{transform:scale(1)}45%{transform:scale(1.04)}100%{transform:scale(1)}}
+.pulse-add{animation:pulseAdd .28s ease}
+@keyframes popIn{0%{opacity:0;transform:translateY(4px) scale(.97)}100%{opacity:1;transform:translateY(0) scale(1)}}
+.pop-in{animation:popIn .18s ease}
+.quick-chip{transition:transform .12s,box-shadow .12s;cursor:pointer}
+.quick-chip:active{transform:scale(.94)}
+.badge-low{background:#fee2e2;color:#b91c1c}
+.badge-mid{background:#fef3c7;color:#92400e}
+.badge-ok{background:#dcfce7;color:#15803d}
+.shift-dot{width:8px;height:8px;border-radius:9999px;display:inline-block}
+#confirmModal .cm-box, #receiptModal .rc-box{animation:popIn .18s ease}
+/* Printable receipt: hide everything else when printing */
+@media print{
+  body *{visibility:hidden}
+  #receiptPrintArea, #receiptPrintArea *{visibility:visible}
+  #receiptPrintArea{position:absolute;left:0;top:0;width:100%}
+}
+/* Customer-facing display */
+#customerDisplayScreen{background:radial-gradient(circle at 50% 0%,#4338ca,#1e1b4b 70%)}
+.cd-item{animation:popIn .25s ease}
+.cd-total{font-variant-numeric:tabular-nums}
+
+/* ── Hardware / connection boost ── */
+@keyframes ringPulse{0%{box-shadow:0 0 0 0 rgba(52,211,153,.55)}70%{box-shadow:0 0 0 8px rgba(52,211,153,0)}100%{box-shadow:0 0 0 0 rgba(52,211,153,0)}}
+.live-dot{animation:ringPulse 1.6s infinite}
+.hw-row{display:flex;align-items:center;justify-content:space-between;gap:.75rem;padding:.75rem;border:1px solid #e2e8f0;border-radius:.75rem}
+.bell-shake{animation:bellShake .5s ease}
+@keyframes bellShake{0%,100%{transform:rotate(0)}20%{transform:rotate(-12deg)}40%{transform:rotate(10deg)}60%{transform:rotate(-8deg)}80%{transform:rotate(6deg)}}
+#scanToastBurst{transition:opacity .25s, transform .25s}
+
+/* ════════════════════════════════════════════════════
+   RESPONSIVE — soporte para cualquier pantalla/navegador
+════════════════════════════════════════════════════ */
+html{-webkit-text-size-adjust:100%;text-size-adjust:100%}
+html,body{max-width:100%;overflow-x:hidden}
+/* Altura real del viewport en móviles (barra de direcciones dinámica) */
+body{height:100vh;height:100svh;height:100dvh}
+/* Evita que textos largos rompan tarjetas y tablas dentro de flex/grid */
+*{min-width:0}
+canvas{max-width:100%!important}
+img,svg,video{max-width:100%;height:auto}
+.break-anywhere{overflow-wrap:anywhere;word-break:break-word}
+.num{font-variant-numeric:tabular-nums}
+
+/* Contenedor de gráficas: altura fija para que Chart.js no se desborde */
+.chart-wrap{position:relative;width:100%;height:190px}
+@media (min-width:480px){ .chart-wrap{height:210px} }
+@media (min-width:768px){ .chart-wrap{height:240px} }
+@media (min-width:1280px){ .chart-wrap{height:270px} }
+.chart-wrap canvas{position:absolute;inset:0;width:100%!important;height:100%!important}
+.chart-wrap.donut{height:220px}
+@media (min-width:768px){ .chart-wrap.donut{height:250px} }
+
+/* Valores de KPI: se encogen solos en pantallas chicas */
+.kpi-val{font-weight:900;line-height:1.15;font-variant-numeric:tabular-nums;
+  overflow-wrap:anywhere;font-size:clamp(1.05rem,4.6vw,1.6rem)}
+@media (min-width:640px){ .kpi-val{font-size:clamp(1.15rem,2.2vw,1.6rem)} }
+
+/* Hojas / modales: alto seguro en móviles con barras dinámicas */
+.sheet{max-height:90vh;max-height:90svh;max-height:90dvh;overflow-y:auto;
+  -webkit-overflow-scrolling:touch}
+
+/* Scroll horizontal suave en tablas */
+.table-scroll{overflow-x:auto;-webkit-overflow-scrolling:touch;overscroll-behavior-x:contain}
+.scrollbar-none{scrollbar-width:none;-ms-overflow-style:none}
+.scrollbar-none::-webkit-scrollbar{display:none}
+
+/* Áreas seguras (notch / gesture bar de iPhone y Android) */
+body>nav{padding-left:max(.75rem,env(safe-area-inset-left))!important;
+         padding-right:max(.75rem,env(safe-area-inset-right))!important}
+@media (min-width:640px){
+  body>nav{padding-left:max(1rem,env(safe-area-inset-left))!important;
+           padding-right:max(1rem,env(safe-area-inset-right))!important}
+}
+.pb-safe{padding-bottom:calc(.75rem + env(safe-area-inset-bottom))}
+#cartFab{bottom:calc(1.25rem + env(safe-area-inset-bottom))}
+#cartSheet{padding-bottom:env(safe-area-inset-bottom);
+  max-height:82vh;max-height:82svh;max-height:82dvh}
+#posContent{padding-bottom:calc(6rem + env(safe-area-inset-bottom))}
+@media (min-width:768px){ #posContent{padding-bottom:1.5rem} }
+
+/* iOS Safari hace zoom si el input mide menos de 16px */
+@media (max-width:768px){
+  input,select,textarea{font-size:16px!important}
+}
+
+/* Celulares muy angostos (320–360px: SE, Redmi Go, J2…) */
+@media (max-width:359px){
+  .kpi-val{font-size:1rem}
+  .atab,.matab{font-size:.8rem}
+  #cartFab{transform:scale(.92)}
+}
+
+/* Teléfono en horizontal: menos aire para que quepa el contenido */
+@media (max-height:480px) and (orientation:landscape){
+  .chart-wrap{height:160px}
+  #cartSheet{max-height:94dvh}
+}
+
+/* Tablets y pantallas grandes: aprovechar el ancho */
+@media (min-width:1536px){
+  .admin-content{max-width:1500px;margin-left:auto;margin-right:auto}
+}
+
+/* Fallbacks para navegadores viejos sin gap en flex */
+@supports not (gap:1rem){
+  .flex>*+*{margin-left:.375rem}
+}
