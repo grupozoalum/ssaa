@@ -40,12 +40,7 @@ button,input,select{touch-action:manipulation}
 .badge-ok{background:#dcfce7;color:#15803d}
 .shift-dot{width:8px;height:8px;border-radius:9999px;display:inline-block}
 #confirmModal .cm-box, #receiptModal .rc-box{animation:popIn .18s ease}
-/* Printable receipt: hide everything else when printing */
-@media print{
-  body *{visibility:hidden}
-  #receiptPrintArea, #receiptPrintArea *{visibility:visible}
-  #receiptPrintArea{position:absolute;left:0;top:0;width:100%}
-}
+/* Los estilos del ticket viven en app.js (TICKET_CSS) */
 /* Customer-facing display */
 #customerDisplayScreen{background:radial-gradient(circle at 50% 0%,#4338ca,#1e1b4b 70%)}
 .cd-item{animation:popIn .25s ease}

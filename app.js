@@ -175,7 +175,7 @@ const S = {
   soundOn:true,
   categories:['General','Bebidas','Alimentos','Snacks','Lácteos','Limpieza','Higiene Personal','Dulces','Panadería','Abarrotes'],
   remoteLastSeen:0,
-  printer:{port:null,writer:null,connected:false},
+  printer:{kind:null,port:null,writer:null,device:null,epOut:null,iface:null,connected:false,name:''},
   branches:[], branchUnsub:null,
   userBranchId:null, userBranchName:null,
   editingBranchId:null, reassignSellerUid:null,
@@ -1492,23 +1492,53 @@ function flashHwBadge(){
   HW._badgeTimer=setTimeout(()=>b.classList.add('hidden'),2500);
 }
 
-/* ════════════════════════════════════
-   RECEIPT PRINTER (Web Serial / ESC-POS)
-   Works with most thermal receipt printers connected by USB or
-   Bluetooth-serial on Chrome/Edge desktop & Android.
-════════════════════════════════════ */
-function printerSupported(){ return 'serial' in navigator; }
+/* ════════════════════════════════════════════════════════════════
+   IMPRESORA DE TICKETS — directo, SIN la ventana de impresión de Windows
+   ─ USB (WebUSB): la forma principal. La app le manda los comandos
+     ESC/POS a la impresora; el papel avanza solo lo que mide el ticket.
+   ─ Bluetooth / puerto COM (Web Serial): para impresoras que aparecen
+     como puerto serie.
+   Funciona en Chrome / Edge (Windows, Mac, Linux, Android) con https.
+   En Windows, la impresora USB necesita el driver WinUSB (ver Zadig en
+   el modal de ayuda): con el driver de impresora de Windows el
+   navegador no puede abrirla.
+════════════════════════════════════════════════════════════════ */
+const usbSupported    = () => 'usb' in navigator;
+const serialSupported = () => 'serial' in navigator;
+function printerSupported(){ return usbSupported() || serialSupported(); }
+const PRN_LAST_KEY = 'posPrinterLast_v1';   // {kind, vendorId, productId} para reconectar solo
 
 /* ── Configuración de impresión (persistente) ──
    density  1-5  → calor del cabezal (más alto = más oscuro)
    interval 1-6  → pausa entre líneas de puntos (más alto = menos borroso/manchado)
    doubleStrike  → imprime cada punto dos veces: mucho más nítido en papel barato
    baud          → debe coincidir con el que imprime el autotest de la impresora
-   codepage      → 437 (default), 850 (multilingüe) o 1252 (Windows Latin)          */
-const PRN_KEY = 'posPrinterCfg_v1';
-const PRN_DEFAULT = { baud:9600, density:4, interval:3, doubleStrike:true, codepage:437, width:32, useDC2:false };
+   codepage      → 437 (default), 850 (multilingüe) o 1252 (Windows Latin)
+   paper    58|80 → ancho del rollo. 58 mm = 32 columnas, 80 mm = 48 columnas
+   bigFont       → TODO el ticket en letra doble (la mitad de columnas).
+                   En "normal" solo el nombre del negocio y el TOTAL van grandes:
+                   el ticket mide la mitad y gasta mucho menos papel.
+   ending        → 'tear' = arrancar a mano (avanza feedLines renglones)
+                   'cut'  = impresora con cortador (avanza justo hasta la cuchilla y corta) */
+const PRN_KEY = 'posPrinterCfg_v2';
+const PRN_DEFAULT = { baud:9600, density:4, interval:3, doubleStrike:true, codepage:437, useDC2:false,
+                      paper:58, bigFont:false, ending:'tear', feedLines:3, autoPrint:true };
+const paperMM = cfg => Number((cfg||prnCfg()).paper)===80 ? 80 : 58;
+/* Columnas que caben en una línea con la letra normal de la impresora */
+const prnBaseCols = cfg => paperMM(cfg)===80 ? 48 : 32;
+/* Columnas reales del ticket según el tamaño de letra elegido */
+const prnCols = cfg => {
+  cfg = cfg||prnCfg();
+  const size = PRN_SIZE || (cfg.bigFont ? 'big' : 'normal');
+  return size==='big' ? prnBaseCols(cfg)/2 : prnBaseCols(cfg);
+};
 function prnCfg(){
-  try{ return Object.assign({}, PRN_DEFAULT, JSON.parse(localStorage.getItem(PRN_KEY)||'{}')); }
+  try{
+    /* Hereda papel/densidad/baud de la versión anterior de la config */
+    const old = JSON.parse(localStorage.getItem('posPrinterCfg_v1')||'{}');
+    delete old.bigFont; delete old.width;
+    return Object.assign({}, PRN_DEFAULT, old, JSON.parse(localStorage.getItem(PRN_KEY)||'{}'));
+  }
   catch(e){ return Object.assign({}, PRN_DEFAULT); }
 }
 function savePrnCfg(patch){
@@ -1517,50 +1547,199 @@ function savePrnCfg(patch){
   return cfg;
 }
 
+/* Botón principal "Conectar": USB si el navegador lo soporta, si no Bluetooth/COM */
 async function connectPrinter(){
-  if(!printerSupported()){
-    showToast('Este navegador no soporta impresoras por USB/Serial (usa Chrome/Edge)','warning');
-    return;
-  }
+  if(usbSupported()) return connectPrinterUSB();
+  if(serialSupported()) return connectPrinterSerial();
+  showToast('Este navegador no puede imprimir directo. Usa Chrome o Edge.','warning');
+}
+
+async function connectPrinterUSB(){
+  if(!usbSupported()){ showToast('Este navegador no soporta USB directo (usa Chrome o Edge)','warning'); return false; }
+  let device;
   try{
-    const cfg  = prnCfg();
-    const port = await navigator.serial.requestPort();
-    await port.open({baudRate:cfg.baud});
-    S.printer.port = port;
-    S.printer.writer = port.writable.getWriter();
-    S.printer.connected = true;
-    await applyPrinterSettings();          // calor + code page al conectar
-    updatePrinterUI();
-    showToast('Impresora conectada a '+cfg.baud+' baud ✅','success');
+    device = await navigator.usb.requestDevice({filters:[]});
+  }catch(e){ return false; }                       // el usuario cerró la ventana
+  try{
+    await openUsbPrinter(device);
+    showToast(`Impresora conectada: ${S.printer.name} ✅`,'success');
+    return true;
   }catch(e){
-    if(e.name!=='NotFoundError') showToast('No se pudo conectar: '+e.message,'error');
+    console.warn('USB:', e);
+    try{ await device.close(); }catch(_){}
+    showUsbHelp(e);
+    return false;
   }
+}
+
+async function openUsbPrinter(device){
+  if(S.printer.connected) await closePrinter();
+  await device.open();
+  if(device.configuration === null) await device.selectConfiguration(1);
+  /* Busca la salida "bulk OUT" — de preferencia la interfaz de clase impresora (7) */
+  let pick = null;
+  for(const iface of device.configuration.interfaces){
+    for(const alt of iface.alternates){
+      const ep = alt.endpoints.find(e=>e.direction==='out' && e.type==='bulk');
+      if(!ep) continue;
+      if(!pick || (alt.interfaceClass===7 && pick.cls!==7))
+        pick = {iface:iface.interfaceNumber, alt:alt.alternateSetting, ep:ep.endpointNumber, cls:alt.interfaceClass};
+    }
+  }
+  if(!pick) throw Object.assign(new Error('Ese dispositivo USB no es una impresora'), {name:'NotPrinter'});
+  await device.claimInterface(pick.iface);
+  if(pick.alt) await device.selectAlternateInterface(pick.iface, pick.alt);
+  Object.assign(S.printer, {kind:'usb', device, epOut:pick.ep, iface:pick.iface, connected:true,
+                            name: device.productName || 'Impresora USB'});
+  try{ localStorage.setItem(PRN_LAST_KEY, JSON.stringify({kind:'usb', vendorId:device.vendorId, productId:device.productId})); }catch(e){}
+  await applyPrinterSettings();
+  updatePrinterUI();
+}
+
+async function connectPrinterSerial(){
+  if(!serialSupported()){ showToast('Este navegador no soporta puertos COM / Bluetooth (usa Chrome o Edge)','warning'); return false; }
+  let port;
+  try{ port = await navigator.serial.requestPort(); }catch(e){ return false; }
+  try{
+    await openSerialPrinter(port);
+    showToast(`Impresora conectada a ${prnCfg().baud} baud ✅`,'success');
+    return true;
+  }catch(e){
+    showToast('No se pudo abrir el puerto: '+e.message,'error');
+    return false;
+  }
+}
+async function openSerialPrinter(port){
+  if(S.printer.connected) await closePrinter();
+  const cfg = prnCfg();
+  if(!port.writable) await port.open({baudRate:cfg.baud});
+  Object.assign(S.printer, {kind:'serial', port, writer:port.writable.getWriter(), connected:true,
+                            name:'Impresora Bluetooth / COM'});
+  try{ localStorage.setItem(PRN_LAST_KEY, JSON.stringify({kind:'serial'})); }catch(e){}
+  await applyPrinterSettings();
+  updatePrinterUI();
+}
+
+async function closePrinter(){
+  const P = S.printer;
+  try{
+    if(P.kind==='usb' && P.device){
+      try{ await P.device.releaseInterface(P.iface); }catch(e){}
+      await P.device.close();
+    }
+    if(P.kind==='serial'){
+      if(P.writer) P.writer.releaseLock();
+      if(P.port) await P.port.close();
+    }
+  }catch(e){}
+  Object.assign(S.printer, {kind:null, port:null, writer:null, device:null, epOut:null, iface:null, connected:false, name:''});
+  updatePrinterUI();
 }
 async function disconnectPrinter(){
-  try{
-    if(S.printer.writer){ S.printer.writer.releaseLock(); }
-    if(S.printer.port){ await S.printer.port.close(); }
-  }catch(e){}
-  S.printer.port=null; S.printer.writer=null; S.printer.connected=false;
-  updatePrinterUI();
+  await closePrinter();
+  try{ localStorage.removeItem(PRN_LAST_KEY); }catch(e){}   // que no se reconecte sola
   showToast('Impresora desconectada','info');
 }
+/* La impresora se desconectó o se apagó a medio trabajo */
+function markPrinterLost(){
+  Object.assign(S.printer, {connected:false, writer:null, epOut:null});
+  updatePrinterUI();
+}
+
+/* Reconexión automática: al abrir el POS y al volver a enchufar la impresora.
+   No pide permiso otra vez: usa la impresora que ya autorizaste antes. */
+async function autoReconnectPrinter(){
+  if(S.printer.connected) return true;
+  let last = null;
+  try{ last = JSON.parse(localStorage.getItem(PRN_LAST_KEY)||'null'); }catch(e){}
+  if(!last) return false;
+  try{
+    if(last.kind==='usb' && usbSupported()){
+      const devs = await navigator.usb.getDevices();
+      const d = devs.find(x=>x.vendorId===last.vendorId && x.productId===last.productId) || devs[0];
+      if(d){ await openUsbPrinter(d); return true; }
+    }
+    if(last.kind==='serial' && serialSupported()){
+      const ports = await navigator.serial.getPorts();
+      if(ports[0]){ await openSerialPrinter(ports[0]); return true; }
+    }
+  }catch(e){ console.warn('Reconexión de impresora:', e.message); }
+  return false;
+}
+if(usbSupported()){
+  navigator.usb.addEventListener('connect', ()=>{
+    autoReconnectPrinter().then(ok=>{ if(ok) showToast('Impresora reconectada 🖨️','success'); });
+  });
+  navigator.usb.addEventListener('disconnect', e=>{
+    if(S.printer.kind==='usb' && e.device===S.printer.device){
+      markPrinterLost();
+      showToast('Se desconectó la impresora','warning');
+    }
+  });
+}
+setTimeout(()=>{ autoReconnectPrinter(); }, 600);
+
+/* Antes de imprimir: si no está conectada, intenta reconectar y si no,
+   abre la ventana para elegirla (requiere que venga de un clic). */
+async function ensurePrinter(){
+  if(S.printer.connected) return true;
+  if(await autoReconnectPrinter()) return true;
+  return await connectPrinter();
+}
+
+/* Ayuda cuando Windows no deja abrir la impresora (driver de Windows) */
+function showUsbHelp(err){
+  const msg = err && err.name==='NotPrinter'
+    ? 'Ese dispositivo no es una impresora. Vuelve a intentar y elige la que diga POS, Printer o el nombre de tu impresora.'
+    : 'Windows tiene la impresora "apartada" con su propio driver, por eso el navegador no la puede abrir. Se arregla una sola vez:';
+  const el = g('usbHelpMsg'); if(el) el.textContent = msg;
+  const steps = g('usbHelpSteps'); if(steps) steps.classList.toggle('hidden', !!(err && err.name==='NotPrinter'));
+  const det = g('usbHelpErr'); if(det) det.textContent = err ? `${err.name||'Error'}: ${err.message||''}` : '';
+  g('usbHelpModal')?.classList.remove('hidden');
+}
+function hideUsbHelp(){ g('usbHelpModal')?.classList.add('hidden'); }
+
 function updatePrinterUI(){
   const cfg = prnCfg();
   const lines = [g('printerStatusLine'), g('adminPrinterStatus')];
   lines.forEach(el=>{
     if(!el) return;
     el.textContent = S.printer.connected
-      ? `Conectada a ${cfg.baud} baud · densidad ${cfg.density}/5 ✅`
-      : 'No conectada — se usará impresión del navegador';
+      ? `${S.printer.name} (${S.printer.kind==='usb'?'USB':'Bluetooth/COM'}) · papel ${paperMM(cfg)} mm ✅`
+      : printerSupported()
+        ? 'No conectada — toca Conectar y elige tu impresora'
+        : 'Este navegador no imprime directo: usa Chrome o Edge';
     el.className = (el.id==='printerStatusLine'?'text-xs mt-0.5 ':'text-xs font-semibold mb-3 ') + (S.printer.connected?'text-emerald-600':'text-slate-400');
   });
   /* Refleja la config guardada en los controles del panel Admin → Hardware */
   const set=(id,val)=>{ const el=g(id); if(el){ if(el.type==='checkbox') el.checked=!!val; else el.value=val; } };
   set('prn_baud', cfg.baud); set('prn_density', cfg.density); set('prn_interval', cfg.interval);
   set('prn_double', cfg.doubleStrike); set('prn_codepage', cfg.codepage);
+  /* Papel y letra aparecen en dos lugares: Admin → Hardware y el modal de caja */
+  ['prn_paper','hw_paper'].forEach(id=>set(id, paperMM(cfg)));
+  ['prn_font','hw_font'].forEach(id=>set(id, cfg.bigFont?'big':'normal'));
+  ['prn_end','hw_end'].forEach(id=>set(id, cfg.ending==='cut' ? 'cut' : 'tear'+cfg.feedLines));
+  set('prn_auto', cfg.autoPrint);
+  ['prn_colsHint','hw_colsHint'].forEach(id=>{ const el=g(id); if(el) el.textContent = cfg.bigFont
+      ? `Todo en letra grande: ${prnCols(cfg)} letras por renglón (gasta más papel).`
+      : `${prnBaseCols(cfg)} letras por renglón; nombre y TOTAL en grande.`; });
+  document.querySelectorAll('[data-prn-on]').forEach(el=>el.classList.toggle('hidden', !S.printer.connected));
+  document.querySelectorAll('[data-prn-off]').forEach(el=>el.classList.toggle('hidden', !!S.printer.connected));
   const dl=g('prn_densityLabel'); if(dl) dl.textContent = cfg.density+'/5';
   const il=g('prn_intervalLabel'); if(il) il.textContent = cfg.interval+'/6';
+}
+/* Papel (58/80 mm) y tamaño de letra: sirven igual para la impresora
+   conectada y para la impresión desde el navegador. */
+function onPaperChange(el){
+  if(el.dataset.key==='paper') savePrnCfg({paper: Number(el.value)===80 ? 80 : 58});
+  if(el.dataset.key==='font')  savePrnCfg({bigFont: el.value==='big'});
+  if(el.dataset.key==='end'){
+    if(el.value==='cut') savePrnCfg({ending:'cut'});
+    else savePrnCfg({ending:'tear', feedLines: Number(el.value.replace('tear',''))||3});
+  }
+  if(el.dataset.key==='auto') savePrnCfg({autoPrint: !!el.checked});
+  updatePrinterUI();
+  showToast('Ajuste de impresión guardado','success');
 }
 /* Handler de los controles del panel */
 async function onPrinterCfgChange(){
@@ -1598,11 +1777,13 @@ const ESC = {
      ESC E 1    → negritas
      ESC G n    → doble pasada (checkbox "Doble pasada")                    */
 let PRN_RAW = false;   // true = escribir sin estilo (solo la prueba de densidades)
+let PRN_SIZE = null;   // 'big' | 'normal' para la línea en curso (null = según config)
 function prnStyleBytes(cfg){
+  const big = (PRN_SIZE || (cfg.bigFont ? 'big' : 'normal')) === 'big';
   return [
     heatCmd(cfg),                                  // mismo calor → mismo tono en toda la hoja
-    new Uint8Array([0x1B,0x21,0x38]),              // ESC ! negrita + doble alto + doble ancho
-    new Uint8Array([0x1D,0x21,0x11]),              // GS  ! doble alto + doble ancho
+    new Uint8Array([0x1B,0x21, big?0x38:0x08]),    // ESC ! negrita (+ doble alto/ancho si es letra grande)
+    new Uint8Array([0x1D,0x21, big?0x11:0x00]),    // GS  ! doble alto + doble ancho / tamaño normal
     new Uint8Array([0x1B,0x45,0x01]),              // ESC E negritas
     new Uint8Array([0x1B,0x47, cfg.doubleStrike?1:0]), // ESC G doble pasada
   ];
@@ -1654,82 +1835,117 @@ function encPrinter(str, cp){
 /* ── Escritura por bloques + estilo por línea ──
    Las POS-58 baratas tienen un búfer chico: si le mandas todo de golpe
    pierde bytes y el ticket sale cortado o "movido". */
-const PRN_CHUNK = 48, PRN_PAUSE = 12;
 const sleep = ms => new Promise(r=>setTimeout(r,ms));
+/* Envía bytes por el medio conectado.
+   Serial/Bluetooth: bloques de 48 con pausa (no tienen control de flujo).
+   USB: bloques grandes; el propio USB espera si el búfer de la impresora se llena. */
+async function prnSend(bytes){
+  const P = S.printer;
+  if(!P.connected) throw new Error('Impresora no conectada');
+  try{
+    if(P.kind==='usb'){
+      for(let i=0; i<bytes.length; i+=4096){
+        const r = await P.device.transferOut(P.epOut, bytes.slice(i, i+4096));
+        if(r.status!=='ok') throw new Error('USB '+r.status);
+      }
+    } else if(P.kind==='serial'){
+      for(let i=0; i<bytes.length; i+=48){
+        await P.writer.write(bytes.slice(i, i+48));
+        if(bytes.length > 48) await sleep(12);
+      }
+    } else throw new Error('Impresora no conectada');
+  }catch(e){
+    markPrinterLost();
+    throw e;
+  }
+}
+/* Arma los bytes (texto + estilo antes de cada línea) y los manda de una vez */
 async function writeToPrinter(...chunks){
-  const w = S.printer.writer;
-  if(!w) throw new Error('Impresora no conectada');
+  if(!S.printer.connected) throw new Error('Impresora no conectada');
   const cfg = prnCfg();
-  const raw = async b => {
-    for(let i=0; i<b.length; i+=PRN_CHUNK){
-      await w.write(b.slice(i, i+PRN_CHUNK));
-      if(b.length > PRN_CHUNK) await sleep(PRN_PAUSE);
-    }
-  };
+  const out = [];
+  const push = b => out.push(b);
   const style = PRN_RAW ? [] : prnStyleBytes(cfg);
   for(const c of chunks){
-    if(c instanceof Uint8Array){ await raw(c); continue; }
-    if(PRN_RAW){ await raw(encPrinter(c, cfg.codepage)); continue; }
+    if(c instanceof Uint8Array){ push(c); continue; }
+    if(PRN_RAW){ push(encPrinter(c, cfg.codepage)); continue; }
     /* Una línea a la vez, reafirmando el estilo antes de cada una */
     const parts = String(c).split('\n');
     for(let i=0; i<parts.length; i++){
-      if(parts[i]){
-        for(const b of style) await w.write(b);
-        await raw(encPrinter(parts[i], cfg.codepage));
-      }
-      if(i < parts.length-1) await raw(new Uint8Array([0x0A]));
+      if(parts[i]){ style.forEach(push); push(encPrinter(parts[i], cfg.codepage)); }
+      if(i < parts.length-1) push(new Uint8Array([0x0A]));
     }
   }
+  const total = out.reduce((n,b)=>n+b.length, 0);
+  const buf = new Uint8Array(total);
+  let o = 0; out.forEach(b=>{ buf.set(b, o); o += b.length; });
+  await prnSend(buf);
+}
+/* Un trabajo a la vez: si se pide imprimir dos veces seguidas, no se mezclan */
+let PRN_QUEUE = Promise.resolve();
+function prnJob(fn){
+  const run = PRN_QUEUE.then(fn, fn);
+  PRN_QUEUE = run.catch(()=>{});
+  return run;
+}
+/* Final del ticket: arrancar a mano (avanza N renglones) o cortar */
+function prnEndBytes(cfg){
+  if(cfg.ending==='cut') return new Uint8Array([0x1D,0x56,0x42,0x00]);   // GS V 66 0: avanza a la cuchilla y corta
+  const n = Math.max(0, Math.min(8, cfg.feedLines|0));
+  return new Uint8Array(n).fill(0x0A);
 }
 
 /* ── Formato ──
    A doble ancho caben 16 caracteres por línea en una POS-58 (no 32). */
-const PRN_W = 16;
-function prnLine(ch='-'){ return ch.repeat(PRN_W)+'\n'; }
+/* Las funciones de formato leen las columnas del papel elegido (58/80 mm)
+   y del tamaño de letra. 58 mm: 32 normal / 16 grande. 80 mm: 48 / 24. */
+function prnLine(ch='-'){ return ch.repeat(prnCols())+'\n'; }
 function prnRow(left, right){
-  left = String(left); right = String(right);
-  const space = PRN_W - right.length;
-  if(left.length > space-1) left = left.slice(0, Math.max(1, space-1));
-  return left + ' '.repeat(Math.max(1, space-left.length)) + right + '\n';
+  const W = prnCols();
+  left = String(left); right = String(right).slice(0, W);
+  /* Si no caben juntos (letra grande en 58 mm), el texto va arriba y el
+     importe abajo alineado a la derecha, en lugar de cortar la palabra. */
+  if(left.length + 1 + right.length > W){
+    return prnWrap(left, W, 2).join('\n') + '\n' + ' '.repeat(Math.max(0, W-right.length)) + right + '\n';
+  }
+  return left + ' '.repeat(W - left.length - right.length) + right + '\n';
 }
 function prnCenter(txt){
-  txt = String(txt).slice(0, PRN_W);
-  const pad = Math.max(0, Math.floor((PRN_W - txt.length)/2));
-  return ' '.repeat(pad) + txt + '\n';
+  const W = prnCols();
+  return prnWrap(txt, W, 3).map(l=>{
+    const pad = Math.max(0, Math.floor((W - l.length)/2));
+    return ' '.repeat(pad) + l + '\n';
+  }).join('');
+}
+/* Parte un texto en renglones por palabras, sin cortar a la mitad si se puede */
+function prnWrap(txt, W, maxLines=2){
+  const words = String(txt||'').trim().split(/\s+/).filter(Boolean);
+  const lines = []; let cur = '';
+  for(let w of words){
+    while(w.length > W){                       // palabra más larga que la línea
+      if(cur){ lines.push(cur); cur=''; }
+      lines.push(w.slice(0, W)); w = w.slice(W);
+    }
+    if(!cur) cur = w;
+    else if((cur+' '+w).length <= W) cur += ' '+w;
+    else { lines.push(cur); cur = w; }
+  }
+  if(cur) lines.push(cur);
+  return lines.length > maxLines ? lines.slice(0, maxLines) : (lines.length ? lines : ['']);
 }
 const noSym = n => fmt(n).replace(/^\$/,'');
-/* Cada producto ocupa 2 líneas: el nombre completo y luego cantidad × precio.
-   A 16 columnas, meterlo todo en una sola línea cortaría demasiado el nombre. */
-function prnItem(it){
-  const name = String(it.name||'').slice(0, PRN_W);
-  return name + '\n' + prnRow(`${it.quantity} x ${noSym(it.price)}`, fmt(it.subtotal));
-}
+const METODO_TICKET = {cash:'Efectivo', card:'Tarjeta', mixed:'Mixto'};
 
 async function printEscPos(sale){
-  await applyPrinterSettings();
-  const d = new Date();
-  const fecha = d.toLocaleDateString('es-MX',{day:'2-digit',month:'2-digit',year:'2-digit'})
-              + ' ' + d.toLocaleTimeString('es-MX',{hour:'2-digit',minute:'2-digit'});
-  const enc = encabezadoTicket(sale);
-  await writeToPrinter(prnCenter(enc.negocio.toUpperCase()));
-  if(enc.sucursal) await writeToPrinter(prnCenter(enc.sucursal));
-  await writeToPrinter(prnCenter(fecha), prnLine());
-  for(const it of sale.items){
-    await writeToPrinter(prnItem(it));
-  }
-  await writeToPrinter(prnLine());
-  await writeToPrinter(prnRow('Subtot', fmt(sale.subtotal)));
-  if(sale.discountAmt) await writeToPrinter(prnRow('Desc', '-'+fmt(sale.discountAmt)));
-  await writeToPrinter(prnRow('TOTAL', fmt(sale.total)));
-  await writeToPrinter(prnLine(), prnCenter(pieDeTicket()), ESC.FEED, ESC.CUT);
+  await printLinesEscPos(ticketLines(sale));
 }
 
 async function testPrint(){
-  if(!S.printer.connected){ showToast('Primero conecta una impresora','warning'); return; }
+  if(!(await ensurePrinter())) return;
   try{
     await printEscPos({
-      items:[{name:'Prueba ñÁ',quantity:2,price:5,subtotal:10}],
-      subtotal:10, discountAmt:0, total:10
+      items:[{name:'Prueba ñÁ de un nombre largo',quantity:2,price:5,subtotal:10}],
+      subtotal:10, discountAmt:0, total:10, payMethod:'cash', amountPaid:20, change:10
     });
     showToast('Ticket de prueba enviado','success');
   }catch(e){ showToast('Error al imprimir: '+e.message,'error'); }
@@ -1738,22 +1954,23 @@ async function testPrint(){
 /* ── Prueba de calibración: imprime la misma línea con las 5 densidades
      para que elijas a simple vista cuál se ve nítida en tu papel. ── */
 async function testPrintDensity(){
-  if(!S.printer.connected){ showToast('Primero conecta una impresora','warning'); return; }
+  if(!(await ensurePrinter())) return;
   const cfg = prnCfg();
-  PRN_RAW = true;   // sin estilo forzado: aquí sí queremos comparar normal vs doble
-  try{
+  try{ await prnJob(async()=>{
+    PRN_RAW = true;   // sin estilo forzado: aquí sí queremos comparar normal vs doble
     await writeToPrinter(ESC.INIT, codepageCmd(cfg.codepage), ESC.CENTER,
-      'PRUEBA DE DENSIDAD\n', ESC.LEFT, '-'.repeat(32)+'\n');
+      'PRUEBA DE DENSIDAD\n', ESC.LEFT, '-'.repeat(prnBaseCols(cfg))+'\n');
     for(let d=1; d<=5; d++){
       await writeToPrinter(new Uint8Array([0x1B,0x37,7,[60,100,140,180,230][d-1], Math.min(15,Math.max(1,cfg.interval))]));
       await writeToPrinter(new Uint8Array([0x1B,0x47,0x00]), `Densidad ${d} normal 0123 ABCabc\n`);
       await writeToPrinter(new Uint8Array([0x1B,0x47,0x01]), `Densidad ${d} doble  0123 ABCabc\n`);
     }
-    await writeToPrinter(new Uint8Array([0x1B,0x47,0x00]), '-'.repeat(32)+'\n',
-      'Elige la mas nitida.\n', ESC.FEED, ESC.CUT);
-    showToast('Prueba de densidad enviada','success');
-  }catch(e){ showToast('Error al imprimir: '+e.message,'error'); }
-  finally{ await applyPrinterSettings().catch(()=>{ PRN_RAW = false; }); }
+    await writeToPrinter(new Uint8Array([0x1B,0x47,0x00]), '-'.repeat(prnBaseCols(cfg))+'\n',
+      'Elige la mas nitida.\n', prnEndBytes(cfg));
+    PRN_RAW = false;
+    await applyPrinterSettings();
+  }); showToast('Prueba de densidad enviada','success'); }
+  catch(e){ PRN_RAW = false; showToast('Error al imprimir: '+e.message,'error'); }
 }
 
 /* ════════════════════════════════════
@@ -2237,6 +2454,7 @@ async function processPayment(){
       change:S.payMethod==='cash'?Math.max(0,paid-total):0,
       sellerId:S.user.uid,
       sellerName:S.user.displayName||S.user.email,
+      cashierName: nombreCajeroActual(),   // lo que sale en el ticket (nunca el correo)
       storeName: nombreNegocio(),
       branchId:S.userBranchId||null,
       branchName:S.userBranchName||null,
@@ -2293,56 +2511,250 @@ async function processPayment(){
    RECEIPT (post-payment)
 ════════════════════════════════════ */
 let _lastReceipt=null;
+
+/* ════════════════════════════════════════════════════════
+   TICKET — un solo "modelo" de renglones que se dibuja igual en:
+   la vista previa, la impresión del navegador (58/80 mm), la
+   impresora térmica ESC/POS y el texto para WhatsApp.
+   Nunca lleva correos ni la dirección (link) del POS.
+════════════════════════════════════════════════════════ */
+
+/* Nombre de quien cobra, para el ticket. Si solo tenemos un correo, no se muestra. */
+function limpiarNombre(n){
+  n = String(n||'').trim();
+  return (!n || n.includes('@')) ? '' : n;
+}
+function nombreCajeroActual(){
+  return limpiarNombre(PERFIL && PERFIL.name) || limpiarNombre(S.user && S.user.displayName) || '';
+}
+function nombreCajero(sale){
+  return limpiarNombre(sale && sale.cashierName) || limpiarNombre(sale && sale.sellerName);
+}
+/* Por si algún texto trae una URL o un correo (p. ej. el pie de ticket), se quita */
+function sinLinks(t){
+  return String(t||'')
+    .replace(/https?:\/\/\S+/gi,'')
+    .replace(/\bwww\.\S+/gi,'')
+    .replace(/[^\s@]+@[^\s@]+\.[^\s@]+/g,'')
+    .replace(/\s{2,}/g,' ').trim();
+}
+function fechaTicket(iso){
+  const d = iso ? new Date(iso) : new Date();
+  return d.toLocaleDateString('es-MX',{day:'2-digit',month:'2-digit',year:'2-digit'})
+       + ' ' + d.toLocaleTimeString('es-MX',{hour:'2-digit',minute:'2-digit',hour12:false});
+}
+
+/* Renglones del ticket de venta.
+   t: 'center' | 'text' | 'row' | 'hr'   ·  strong: negritas/total */
+function ticketLines(sale){
+  const enc = encabezadoTicket(sale);
+  const L = [];
+  L.push({t:'center', k:'store', text:sinLinks(enc.negocio).toUpperCase()});
+  if(enc.sucursal) L.push({t:'center', k:'meta', text:sinLinks(enc.sucursal)});
+  L.push({t:'center', k:'meta', text:fechaTicket(sale.tsISO)});
+  const cajero = nombreCajero(sale);
+  if(cajero) L.push({t:'center', k:'meta', text:'Atendió: '+cajero});
+  L.push({t:'hr'});
+  (sale.items||[]).forEach(it=>{
+    const qty = it.isBulk ? `${round3(it.quantity)} kg` : `${it.quantity}`;
+    L.push({t:'text', k:'item', text:it.name});
+    L.push({t:'row', k:'itemrow', l:`${qty} x ${fmt(it.price)}`, r:fmt(it.subtotal)});
+  });
+  L.push({t:'hr'});
+  const nArt = (sale.items||[]).reduce((n,it)=>n + (it.isBulk ? 1 : (Number(it.quantity)||0)), 0);
+  L.push({t:'row', k:'sub', l:`Subtotal (${nArt} art.)`, r:fmt(sale.subtotal)});
+  if(sale.discountAmt) L.push({t:'row', k:'sub', l:'Descuento', r:'-'+fmt(sale.discountAmt)});
+  L.push({t:'row', k:'total', l:'TOTAL', r:fmt(sale.total)});
+  if(sale.payMethod){
+    L.push({t:'row', k:'pay', l:'Pago', r:METODO_TICKET[sale.payMethod]||''});
+    if(sale.payMethod==='cash'){
+      L.push({t:'row', k:'pay', l:'Recibido', r:fmt(sale.amountPaid||sale.total)});
+      L.push({t:'row', k:'pay', l:'Cambio', r:fmt(sale.change||0)});
+    }
+    if(sale.payMethod==='mixed'){
+      L.push({t:'row', k:'pay', l:'Efectivo', r:fmt(sale.cashPortion||0)});
+      L.push({t:'row', k:'pay', l:'Tarjeta', r:fmt(sale.cardPortion||0)});
+    }
+  }
+  const pie = sinLinks(pieDeTicket());
+  if(pie){ L.push({t:'hr'}); L.push({t:'center', k:'footer', text:pie}); }
+  return L;
+}
+
+/* ── Estilos del ticket ──
+   Van aquí (y no en styles.css) para que el ticket SIEMPRE salga con
+   formato aunque el navegador tenga guardada una versión vieja del CSS.
+   Al imprimir todo es negro puro: los grises solo se usan en pantalla. */
+const TICKET_CSS = `
+.tk{color:#000;background:#fff;font-family:'Segoe UI',Roboto,Arial,Helvetica,sans-serif;
+  font-weight:600;line-height:1.3;box-sizing:border-box;
+  -webkit-print-color-adjust:exact;print-color-adjust:exact;font-variant-numeric:tabular-nums}
+.tk *{box-sizing:border-box}
+.tk.p58{width:58mm;padding:4mm 5mm 5mm;font-size:11.5px}
+.tk.p80{width:80mm;padding:4mm 5mm 5mm;font-size:13px}
+.tk.p58.big{font-size:13px}
+.tk.p80.big{font-size:15px}
+.tk-c{text-align:center;overflow-wrap:anywhere}
+.tk-x{overflow-wrap:anywhere}
+.tk-r{display:flex;justify-content:space-between;align-items:baseline;gap:8px}
+.tk-r>span:first-child{min-width:0;overflow-wrap:anywhere}
+.tk-r>span:last-child{white-space:nowrap;text-align:right}
+.tk-hr{border-top:1.5px dashed #000;margin:7px 0}
+.tk .s{font-weight:800}
+.tk .t{font-size:1.15em}
+
+.tk .k-store{font-size:1.35em;font-weight:900;letter-spacing:.04em;line-height:1.15;margin-bottom:3px}
+.tk .k-tag{font-weight:900;letter-spacing:.12em;margin:3px 0 1px}
+.tk .k-meta{font-size:.88em;font-weight:500}
+.tk .k-item{font-weight:700;margin-top:6px}
+.tk .tk-hr + .k-item{margin-top:0}
+.tk .k-itemrow{font-size:.92em;font-weight:500}
+.tk .k-itemrow>span:last-child{font-weight:800;font-size:1.06em}
+.tk .k-sub{font-size:.95em;font-weight:500}
+.tk .k-total{border-top:2px solid #000;margin-top:5px;padding-top:5px;font-size:1.4em;font-weight:900}
+.tk .k-pay{font-size:.9em;font-weight:500}
+.tk .k-total + .k-pay{margin-top:5px}
+.tk .k-footer{font-weight:700;font-size:.95em}
+
+/* Vista previa en pantalla: un ticket de papel */
+.tk-wrap{background:#f1f5f9;border-radius:14px;padding:14px 10px 18px;display:flex;justify-content:center;overflow:hidden}
+.tk-screen{max-width:100%;box-shadow:0 1px 2px rgba(15,23,42,.08),0 6px 18px rgba(15,23,42,.10);
+  border-radius:3px 3px 0 0;position:relative}
+.tk-screen::after{content:'';position:absolute;left:0;right:0;bottom:-7px;height:8px;
+  background:linear-gradient(-45deg,transparent 5px,#fff 0) 0 0/10px 8px repeat-x,
+             linear-gradient(45deg,transparent 5px,#fff 0) 0 0/10px 8px repeat-x}
+.tk-screen .k-meta,.tk-screen .k-itemrow>span:first-child,.tk-screen .k-sub,.tk-screen .k-pay{color:#475569}
+.tk-screen .tk-hr{border-color:#94a3b8}
+.tk-screen .k-total{color:#0f172a}
+
+/* Contenedor de impresión: invisible en pantalla */
+#ticketPrint{display:none}
+#ticketPrint.measuring{display:block;position:fixed;left:-9999px;top:0;visibility:hidden}
+@media print{
+  /* Sin margen de página = el navegador no imprime título, fecha ni la URL */
+  @page{margin:0}
+  html,body{height:auto!important;min-height:0!important;overflow:visible!important;background:#fff!important;margin:0!important;padding:0!important}
+  body>*:not(#ticketPrint){display:none!important}
+  #ticketPrint{display:block!important;position:static!important;visibility:visible!important}
+  #ticketPrint *{color:#000!important;border-color:#000!important}
+}`;
+(function injectTicketCSS(){
+  if(document.getElementById('ticketStyles')) return;
+  const st = document.createElement('style');
+  st.id = 'ticketStyles';
+  st.textContent = TICKET_CSS;
+  document.head.appendChild(st);
+})();
+
+/* → HTML (vista previa e impresión del navegador) */
+function ticketHTML(lines){
+  return lines.map(x=>{
+    const cls = (x.k?' k-'+x.k:'') + (x.strong?' s':'') + (x.title?' t':'');
+    if(x.t==='hr')     return '<div class="tk-hr"></div>';
+    if(x.t==='center') return `<div class="tk-c${cls}">${esc(x.text)}</div>`;
+    if(x.t==='row')    return `<div class="tk-r${cls}"><span>${esc(x.l)}</span><span>${esc(x.r)}</span></div>`;
+    return `<div class="tk-x${cls}">${esc(x.text)}</div>`;
+  }).join('');
+}
+/* → impresora térmica (respeta columnas del papel elegido) */
+/* Todo el ticket se arma y se manda en un solo envío.
+   El nombre del negocio y el TOTAL van en letra doble; el resto según
+   "Tamaño de letra" (normal = la mitad de papel). */
+function printLinesEscPos(lines){
+  return prnJob(async()=>{
+    await applyPrinterSettings();
+    const cfg = prnCfg();
+    const body = cfg.bigFont ? 'big' : 'normal';
+    const parts = [];
+    try{
+      for(const x of lines){
+        PRN_SIZE = (x.k==='store' || x.k==='total') ? 'big' : body;
+        const W = prnCols(cfg);
+        let txt;
+        if(x.t==='hr')          txt = prnLine();
+        else if(x.t==='center') txt = prnCenter(x.text);
+        else if(x.t==='row')    txt = prnRow(x.l.replace(/\$/g,''), x.r);
+        else                    txt = prnWrap(x.text, W, 2).join('\n')+'\n';
+        /* El estilo (tamaño) se calcula ahora, mientras PRN_SIZE es el de esta línea */
+        const style = prnStyleBytes(cfg);
+        txt.split('\n').forEach((ln, i, arr)=>{
+          if(ln){ parts.push(...style, encPrinter(ln, cfg.codepage)); }
+          if(i < arr.length-1) parts.push(new Uint8Array([0x0A]));
+        });
+      }
+    } finally { PRN_SIZE = null; }
+    parts.push(...prnStyleBytes(cfg), prnEndBytes(cfg));
+    await writeToPrinter(...parts);    // solo Uint8Array: se envía tal cual
+  });
+}
+/* → texto plano (WhatsApp / compartir) */
+function ticketPlainText(lines){
+  return lines.map(x=>{
+    if(x.t==='hr') return '—————————';
+    if(x.t==='row') return `${x.l}: ${x.r}`;
+    return x.text;
+  }).join('\n');
+}
+
+/* Imprime desde el navegador al ancho del rollo (58 u 80 mm).
+   @page con margen 0 hace que Chrome/Edge NO impriman el encabezado y
+   pie de página automáticos (título, fecha y la dirección del POS). */
+function imprimirEnNavegador(lines){
+  const cfg = prnCfg(), mm = paperMM(cfg);
+  const box = g('ticketPrint');
+  box.className = `tk p${mm}${cfg.bigFont?' big':''}`;
+  box.innerHTML = ticketHTML(lines);
+  /* Se mide el ticket para que la hoja tenga su largo exacto (sin papel de más) */
+  box.classList.add('measuring');
+  const altoMM = Math.ceil(box.getBoundingClientRect().height * 25.4 / 96) + 8;
+  box.classList.remove('measuring');
+  let st = g('pageSizeStyle');
+  if(!st){ st = document.createElement('style'); st.id = 'pageSizeStyle'; document.head.appendChild(st); }
+  st.textContent = `@page{size:${mm}mm ${Math.max(altoMM, 40)}mm;margin:0}`;
+  /* Por si algún navegador ignora el margen 0: sin título en el encabezado */
+  const titulo = document.title;
+  document.title = ' ';
+  const volver = () => { document.title = titulo; window.removeEventListener('afterprint', volver); };
+  window.addEventListener('afterprint', volver);
+  setTimeout(()=>{ window.print(); setTimeout(volver, 1500); }, 60);
+}
+
 function showReceiptModal(sale){
   _lastReceipt=sale;
-  /* Encabezado: negocio, sucursal, fecha y quién atendió */
-  const enc = encabezadoTicket(sale);
-  g('rcStoreEl').textContent = '🏪 ' + enc.negocio.toUpperCase();
-  const suc = g('rcBranchEl');
-  suc.textContent = enc.sucursal;
-  suc.classList.toggle('hidden', !enc.sucursal);
-  const cuando = new Date(sale.tsISO || Date.now());
-  g('rcMetaEl').textContent =
-    cuando.toLocaleString('es-MX',{dateStyle:'short',timeStyle:'short'})
-    + (sale.sellerName ? ' · ' + sale.sellerName : '');
-  g('rcFooterEl').textContent = pieDeTicket();
-  g('receiptItemsEl').innerHTML = sale.items.map(it=>
-    `<div class="flex justify-between font-black text-black text-base"><span>${esc(it.name)} ×${it.quantity}</span><span>${fmt(it.subtotal)}</span></div>`
-  ).join('');
-  let totalsHtml = `<div class="flex justify-between font-black text-black text-base"><span>Subtotal</span><span>${fmt(sale.subtotal)}</span></div>`;
-  if(sale.discountAmt) totalsHtml += `<div class="flex justify-between font-black text-black text-base"><span>Descuento</span><span>-${fmt(sale.discountAmt)}</span></div>`;
-  totalsHtml += `<div class="flex justify-between font-black text-black text-base border-t border-dashed border-black mt-1 pt-1"><span>Total</span><span>${fmt(sale.total)}</span></div>`;
-  const methodLabel = sale.payMethod==='cash'?'Efectivo':sale.payMethod==='card'?'Tarjeta':'Mixto (efectivo + tarjeta)';
-  totalsHtml += `<div class="flex justify-between font-black text-black text-base pt-1"><span>Pago</span><span>${methodLabel}</span></div>`;
-  if(sale.payMethod==='cash') totalsHtml += `<div class="flex justify-between font-black text-black text-base"><span>Cambio</span><span>${fmt(sale.change||0)}</span></div>`;
-  g('receiptTotalsEl').innerHTML = totalsHtml;
+  const cfg = prnCfg();
+  g('receiptPrintArea').innerHTML =
+    `<div class="tk-wrap"><div class="tk tk-screen p${paperMM(cfg)}${cfg.bigFont?' big':''}">${ticketHTML(ticketLines(sale))}</div></div>`;
   g('receiptModal').classList.remove('hidden');
-  /* Auto-print via connected thermal printer, when available */
-  if(S.printer.connected){ printEscPos(sale).catch(()=>{}); }
+  /* Se imprime solo al cobrar si la impresora está conectada */
+  if(S.printer.connected && prnCfg().autoPrint){
+    printEscPos(sale).catch(e=>showToast('No se pudo imprimir: '+e.message+'. Toca Imprimir para reintentar.','error'));
+  }
 }
 function hideReceiptModal(){ g('receiptModal').classList.add('hidden'); }
-function receiptText(sale){
-  const enc = encabezadoTicket(sale);
-  const lines=[`🏪 ${enc.negocio}`];
-  if(enc.sucursal) lines.push(enc.sucursal);
-  lines.push(`Vendedor: ${sale.sellerName||''}`,``);
-  sale.items.forEach(it=>lines.push(`${it.name} ×${it.quantity} — ${fmt(it.subtotal)}`));
-  lines.push('');
-  if(sale.discountAmt) lines.push(`Descuento: -${fmt(sale.discountAmt)}`);
-  lines.push(`Total: ${fmt(sale.total)}`);
-  lines.push('');
-  lines.push(pieDeTicket());
-  return lines.join('\n');
-}
+function receiptText(sale){ return ticketPlainText(ticketLines(sale)); }
 function shareReceipt(){
   if(!_lastReceipt) return;
   const text = receiptText(_lastReceipt);
-  if(navigator.share){ navigator.share({title:'Recibo', text}).catch(()=>{}); return; }
+  /* Solo texto: sin url, para que no se comparta el link del POS */
+  if(navigator.share){ navigator.share({text}).catch(()=>{}); return; }
   window.open('https://wa.me/?text='+encodeURIComponent(text),'_blank');
 }
-function printReceipt(){
-  if(S.printer.connected && _lastReceipt){ printEscPos(_lastReceipt).catch(()=>window.print()); return; }
-  window.print();
+async function printReceipt(){
+  if(!_lastReceipt) return;
+  await imprimirDirecto(ticketLines(_lastReceipt));
+}
+/* Imprime en la térmica sin abrir la ventana de impresión.
+   Solo si el navegador NO puede hablar con la impresora (iPhone, Firefox)
+   se usa la impresión del navegador como último recurso. */
+async function imprimirDirecto(lines){
+  if(!printerSupported()){ imprimirEnNavegador(lines); return; }
+  if(!(await ensurePrinter())) return;
+  try{
+    await printLinesEscPos(lines);
+    showToast('Ticket enviado a la impresora 🖨️','success');
+  }catch(e){
+    showToast('No se pudo imprimir: '+e.message+'. Revisa que esté encendida y conectada.','error');
+  }
 }
 
 /* ════════════════════════════════════
@@ -3365,6 +3777,7 @@ async function showShiftDetail(id){
   const cogs=sales.reduce((a,x)=>a+(x.cost!=null?x.cost:sumItemsCost(x.items)),0);
   const gross=(s.totalSales||0)-cogs;
   const expTotal=exps.reduce((a,x)=>a+(x.amount||0),0);
+  _lastCorte = {s, sales, exps, cogs, gross, expTotal};
   const row=(l,v,cls='')=>`<div class="flex justify-between gap-3 py-1 min-w-0"><span class="text-slate-500 min-w-0 break-anywhere">${l}</span><span class="font-semibold shrink-0 num ${cls}">${v}</span></div>`;
   box.innerHTML=`
     <div class="bg-slate-50 rounded-xl p-3 text-sm mb-3">
@@ -3397,7 +3810,45 @@ async function showShiftDetail(id){
     ${exps.length?`<p class="text-xs font-bold text-slate-400 uppercase tracking-wide mb-1">Salidas registradas</p>
     <div class="space-y-1 mb-3">${exps.map(e=>`<div class="flex justify-between text-xs bg-red-50 border border-red-100 rounded-lg px-3 py-2">
       <span class="text-slate-600 truncate pr-2">${esc(e.concept||e.category||'Gasto')}</span><span class="font-bold text-red-500 shrink-0">-${fmt(e.amount||0)}</span></div>`).join('')}</div>`:''}
-    <button onclick="window.print()" class="w-full bg-slate-100 hover:bg-slate-200 text-slate-700 py-2.5 rounded-xl font-semibold text-sm min-h-[44px]"><i class="fa-solid fa-print mr-1.5"></i>Imprimir corte</button>`;
+    <button onclick="printCorte()" class="w-full bg-slate-100 hover:bg-slate-200 text-slate-700 py-2.5 rounded-xl font-semibold text-sm min-h-[44px]"><i class="fa-solid fa-print mr-1.5"></i>Imprimir corte</button>`;
+}
+/* ── Corte de caja impreso (mismo formato de ticket 58/80 mm) ── */
+let _lastCorte = null;
+function corteLines(c){
+  const s = c.s, L = [];
+  const dif = s.difference;
+  L.push({t:'center', k:'store', text:sinLinks(s.storeName||nombreNegocio()).toUpperCase()});
+  if(s.branchName) L.push({t:'center', k:'meta', text:sinLinks(s.branchName)});
+  L.push({t:'center', k:'tag', text:'CORTE DE CAJA'});
+  const cajero = limpiarNombre(s.sellerName);
+  if(cajero) L.push({t:'center', k:'meta', text:'Cajero: '+cajero});
+  L.push({t:'hr'});
+  L.push({t:'row', l:'Apertura', r:tsLabel(s.openAt, s.openISO)});
+  L.push({t:'row', l:'Cierre', r:(s.closeAt||s.closeISO) ? tsLabel(s.closeAt, s.closeISO) : 'Abierto'});
+  L.push({t:'hr'});
+  L.push({t:'row', l:'Fondo inicial', r:fmt(s.openingCash||0)});
+  L.push({t:'row', l:'+ Efectivo', r:fmt(s.cashSales||0)});
+  L.push({t:'row', l:'- Salidas', r:'-'+fmt(s.cashOut||0)});
+  L.push({t:'row', k:'total', l:'Esperado', r:fmt(s.expectedCash!=null ? s.expectedCash : shiftExpectedCash(s))});
+  if(s.countedCash!=null) L.push({t:'row', l:'Contado', r:fmt(s.countedCash)});
+  if(dif!=null) L.push({t:'row', l:'Diferencia', r:(dif>=0?'+':'')+fmt(dif), strong:true});
+  L.push({t:'hr'});
+  L.push({t:'row', l:'Tickets', r:String(s.salesCount||c.sales.length||0)});
+  L.push({t:'row', l:'Total vendido', r:fmt(s.totalSales||0)});
+  L.push({t:'row', l:'Con tarjeta', r:fmt(s.cardSales||0)});
+  if(c.exps.length){
+    L.push({t:'hr'});
+    L.push({t:'text', text:'Salidas registradas', strong:true});
+    c.exps.forEach(e=>L.push({t:'row', l:e.concept||e.category||'Gasto', r:'-'+fmt(e.amount||0)}));
+  }
+  L.push({t:'hr'});
+  L.push({t:'center', k:'meta', text:'Impreso '+fechaTicket()});
+  return L;
+}
+function printCorte(){
+  if(!_lastCorte) return;
+  const lines = corteLines(_lastCorte);
+  imprimirDirecto(lines);
 }
 function hideShiftDetail(){ g('shiftDetailModal')?.classList.add('hidden'); }
 function exportShiftsCSV(){
