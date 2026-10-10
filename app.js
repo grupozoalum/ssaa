@@ -1138,6 +1138,8 @@ function showProduct(p){
   refreshProductStockUI();
   show('stateProduct'); hide('stateNotFound'); hide('stateWelcome'); hide('stateLoading');
   beep('scan');
+  /* El producto está hasta arriba: en celular regresamos el scroll para verlo */
+  if(isMobile()){ const pc=g('posContent'); if(pc && pc.scrollTop>40) pc.scrollTo({top:0, behavior:'smooth'}); }
 }
 
 /* Insignia de existencias + botón "Agregar" según lo que queda disponible
@@ -1164,7 +1166,7 @@ function refreshProductStockUI(){
     btn.disabled = sinNada;
     btn.innerHTML = sinNada
       ? '<i class="fa-solid fa-ban mr-1.5"></i>Sin existencias'
-      : '<i class="fa-solid fa-cart-plus mr-1.5"></i>Agregar al carrito';
+      : '<i class="fa-solid fa-cart-plus mr-1.5"></i>Agregar<span class="hidden min-[400px]:inline"> al carrito</span>';
   }
 }
 function showNotFound(code){
@@ -1291,18 +1293,18 @@ function changeQty(d){
 const cartItemHTML = it => `
   <div class="bg-white rounded-xl p-2.5 border border-slate-100">
     <div class="flex justify-between items-start mb-1.5">
-      <p class="text-xs font-semibold text-slate-800 flex-1 pr-2 leading-tight">${esc(it.name)}</p>
-      <button onclick="removeCartItem('${it.barcode}')" class="text-red-300 hover:text-red-500 active:text-red-600 p-0.5 shrink-0 min-w-[24px] min-h-[24px] flex items-center justify-center">
+      <p class="text-sm md:text-xs font-semibold text-slate-800 flex-1 pr-2 leading-tight break-anywhere">${esc(it.name)}</p>
+      <button onclick="removeCartItem('${it.barcode}')" aria-label="Quitar" class="text-red-300 hover:text-red-500 active:text-red-600 -mt-1.5 -mr-1.5 shrink-0 min-w-[36px] min-h-[36px] md:min-w-[24px] md:min-h-[24px] flex items-center justify-center">
         <i class="fa-solid fa-times text-xs"></i>
       </button>
     </div>
     <div class="flex items-center justify-between">
       <div class="flex items-center gap-1">
-        <button onclick="changeCartQty('${it.barcode}',-1)" class="w-6 h-6 bg-slate-100 hover:bg-slate-200 active:bg-slate-300 rounded-full text-sm font-bold flex items-center justify-center">−</button>
-        <span class="text-xs font-bold min-w-[24px] text-center">${it.quantity}${it.isBulk ? 'kg' : ''}</span>
-        <button onclick="changeCartQty('${it.barcode}',1)" class="w-6 h-6 bg-slate-100 hover:bg-slate-200 active:bg-slate-300 rounded-full text-sm font-bold flex items-center justify-center">+</button>
+        <button onclick="changeCartQty('${it.barcode}',-1)" aria-label="Menos" class="w-9 h-9 md:w-6 md:h-6 bg-slate-100 hover:bg-slate-200 active:bg-slate-300 rounded-full text-base md:text-sm font-bold flex items-center justify-center">−</button>
+        <span class="text-sm md:text-xs font-bold min-w-[30px] text-center num">${it.quantity}${it.isBulk ? 'kg' : ''}</span>
+        <button onclick="changeCartQty('${it.barcode}',1)" aria-label="Más" class="w-9 h-9 md:w-6 md:h-6 bg-slate-100 hover:bg-slate-200 active:bg-slate-300 rounded-full text-base md:text-sm font-bold flex items-center justify-center">+</button>
       </div>
-      <p class="text-sm font-black text-indigo-700">${fmt(it.subtotal)}</p>
+      <p class="text-base md:text-sm font-black text-indigo-700 num">${fmt(it.subtotal)}</p>
     </div>
   </div>`;
 
@@ -1342,10 +1344,16 @@ function renderCart(){
   g('cartDiscRowMobile').classList.toggle('flex', !!discountAmt);
   if(discountAmt) g('cartDiscMobile').textContent='-'+fmt(discountAmt);
 
-  /* FAB badge */
+  /* FAB badge + barra inferior del celular (artículos y total) */
   const fab = g('cartFabCount');
-  if(count > 0){ fab.textContent=count; fab.classList.remove('hidden'); }
+  const nArt = round3(count);
+  if(count > 0){ fab.textContent=nArt; fab.classList.remove('hidden'); }
   else fab.classList.add('hidden');
+  g('cartFab').classList.toggle('has-items', S.cart.length>0);
+  g('cartFabItems').textContent = `${nArt} artículo${nArt===1?'':'s'}`;
+  g('cartFabTotal').textContent = fmt(total);
+  g('cartSheetCount').textContent = S.cart.length ? `· ${nArt}` : '';
+  g('checkoutTotalMobile').textContent = S.cart.length ? fmt(total) : '';
 
   refreshParkBadges();
   scheduleCustomerDisplayPush();
@@ -1360,8 +1368,14 @@ function openMobileCart(){
   
   if (window.innerWidth < 768) {
     // Modo móvil: Bottom sheet
-    g('cartSheet').classList.add('open');
+    const sh = g('cartSheet');
+    sh.style.transform = '';
+    sh.classList.add('open');
     document.body.style.overflow='hidden';
+    /* Así el botón "Atrás" de Android (o el gesto) cierra el carrito en vez de salir del POS */
+    if(!_cartHist){
+      try{ history.pushState({posSheet:'cart'}, ''); _cartHist = true; }catch(e){}
+    }
   } else {
     // Modo Escritorio: Slide panel lateral
     const dc = g('cartDesktop');
@@ -1374,7 +1388,15 @@ function openMobileCart(){
   }
 }
 
-function closeMobileCart(){
+let _cartHist = false;   // true = el carrito agregó una entrada al historial (botón Atrás)
+function closeMobileCart(fromHistory){
+  if(fromHistory) _cartHist = false;
+  /* Si el carrito agregó una entrada al historial, se consume al cerrar */
+  else if(_cartHist){
+    _cartHist = false;
+    try{ history.back(); }catch(e){}
+  }
+  g('cartSheet').style.transform = '';
   g('cartFab').classList.remove('hidden'); // <-- Vuelve a mostrar la burbuja flotante
   g('cartBackdrop').classList.add('hidden');
   g('cartSheet').classList.remove('open');
@@ -1389,6 +1411,117 @@ function closeMobileCart(){
     setTimeout(() => dc.classList.add('hidden'), 300);
   }
 }
+
+/* ════════════════════════════════════════════════════════════════
+   CELULAR — menú ⋮, teclado, gestos y detalles por plataforma
+════════════════════════════════════════════════════════════════ */
+function toggleNavMore(ev){
+  ev && ev.stopPropagation();
+  const m = g('navMoreMenu');
+  if(!m.classList.contains('hidden')){ closeNavMore(); return; }
+  const vis = id => { const el=g(id); return el && !el.classList.contains('hidden'); };
+  const item = (icon, label, fn, cls='') =>
+    `<button class="nm-item ${cls}" role="menuitem" onclick="closeNavMore();${fn}"><i class="fa-solid ${icon}"></i><span>${label}</span></button>`;
+  const net = navigator.onLine;
+  let html = '';
+  if(S.user){
+    const nombre = limpiarNombre(PERFIL && PERFIL.name) || limpiarNombre(S.user.displayName) || 'Mi cuenta';
+    html += `<div class="px-4 pt-2 pb-2.5"><p class="text-sm font-bold text-slate-800 truncate">${esc(nombre)}</p>`
+         +  `<p class="text-[11px] text-slate-400 truncate">${esc(S.userBranchName||nombreNegocio()||'')}</p></div><div class="nm-sep"></div>`;
+  }
+  if(vis('hwBtn'))   html += item('fa-print', S.printer.connected ? 'Impresora · conectada' : 'Impresora y hardware', 'openHardwareModal()');
+  html += item(S.soundOn?'fa-volume-high':'fa-volume-xmark', S.soundOn?'Silenciar sonidos':'Activar sonidos', 'toggleSound()');
+  html += item('fa-cloud', net ? 'Sincronización' : 'Sin internet · pendientes', 'openSyncModal()');
+  if(vis('navAdminBtn')) html += item('fa-chart-line', 'Panel de control', 'openAdmin()');
+  if(S.user){ html += '<div class="nm-sep"></div>' + item('fa-right-from-bracket', 'Cerrar sesión', 'logout()', 'danger'); }
+  else html += item('fa-right-to-bracket', 'Iniciar sesión', 'showLoginModal()');
+  m.innerHTML = html;
+  m.classList.remove('hidden'); g('navMoreBackdrop').classList.remove('hidden');
+  g('navMoreBtn')?.setAttribute('aria-expanded','true');
+}
+function closeNavMore(){
+  g('navMoreMenu')?.classList.add('hidden'); g('navMoreBackdrop')?.classList.add('hidden');
+  g('navMoreBtn')?.setAttribute('aria-expanded','false');
+}
+
+/* Corre al terminar de cargar el script (usa g(), isMobile(), etc. definidos más abajo) */
+queueMicrotask(function mobileBoost(){
+  const root = document.documentElement, ua = navigator.userAgent;
+
+  /* Plataforma → clases en <html> para ajustes finos */
+  const ios = /iPhone|iPad|iPod/.test(ua) || (/Macintosh/.test(ua) && navigator.maxTouchPoints > 1);
+  root.classList.add(ios ? 'is-ios' : /Android/.test(ua) ? 'is-android' : 'is-desktop');
+  if(/SamsungBrowser/.test(ua)) root.classList.add('is-samsung');
+  if(matchMedia('(display-mode: standalone)').matches || navigator.standalone) root.classList.add('is-standalone');
+
+  /* Alto visible real y alto del teclado.
+     iPhone no achica la página al abrir el teclado: lo medimos con
+     visualViewport y subimos las hojas inferiores para que no queden tapadas. */
+  const vv = window.visualViewport;
+  const medir = () => {
+    const h = vv ? vv.height : innerHeight;
+    const kb = vv ? Math.max(0, innerHeight - vv.height - vv.offsetTop) : 0;
+    root.style.setProperty('--vvh', h + 'px');
+    root.style.setProperty('--kb', (kb > 80 ? kb : 0) + 'px');
+  };
+  medir();
+  if(vv){ vv.addEventListener('resize', medir); vv.addEventListener('scroll', medir); }
+  addEventListener('resize', medir);
+  addEventListener('orientationchange', () => setTimeout(medir, 250));
+
+  /* Teclado correcto en cada campo:
+     números → teclado numérico con punto; correo → teclado de correo. */
+  const afinar = scope => {
+    if(!scope || !scope.querySelectorAll) return;
+    scope.querySelectorAll('input[type=number]:not([inputmode])').forEach(i => i.setAttribute('inputmode','decimal'));
+    scope.querySelectorAll('input[type=email]').forEach(i => { i.setAttribute('autocapitalize','off'); i.setAttribute('spellcheck','false'); });
+    scope.querySelectorAll('input[type=tel]:not([inputmode])').forEach(i => i.setAttribute('inputmode','tel'));
+  };
+  afinar(document);
+  new MutationObserver(ms => ms.forEach(m => m.addedNodes.forEach(n => n.nodeType===1 && afinar(n))))
+    .observe(document.body, {childList:true, subtree:true});
+
+  /* Al escribir dentro de una hoja o del admin, el campo sube a la vista */
+  document.addEventListener('focusin', e => {
+    const t = e.target;
+    if(!isMobile() || !/^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName)) return;
+    if(!t.closest('.sheet, #adminScroll')) return;
+    setTimeout(() => { try{ t.scrollIntoView({block:'center', behavior:'smooth'}); }catch(_){} }, 320);
+  });
+
+  /* Botón / gesto "Atrás" de Android y iPhone: cierra el carrito */
+  addEventListener('popstate', () => {
+    if(g('cartSheet')?.classList.contains('open')) closeMobileCart(true);
+  });
+
+  /* Deslizar la hoja del carrito hacia abajo para cerrarla */
+  const sheet = g('cartSheet'), head = g('cartSheetHead');
+  if(sheet && head){
+    let y0 = null, dy = 0;
+    head.addEventListener('touchstart', e => { y0 = e.touches[0].clientY; dy = 0; sheet.classList.add('dragging'); }, {passive:true});
+    head.addEventListener('touchmove', e => {
+      if(y0 === null) return;
+      dy = Math.max(0, e.touches[0].clientY - y0);
+      sheet.style.transform = `translateY(${dy}px)`;
+    }, {passive:true});
+    const fin = () => {
+      if(y0 === null) return;
+      sheet.classList.remove('dragging');
+      if(dy > 90) closeMobileCart(); else sheet.style.transform = '';
+      y0 = null;
+    };
+    head.addEventListener('touchend', fin); head.addEventListener('touchcancel', fin);
+  }
+
+  /* En el celular, la tarjeta de "escáner remoto" empieza cerrada:
+     el celular ya ES el escáner, y así el producto queda a la vista. */
+  if(innerWidth < 640){
+    const body = g('termCardBody');
+    if(body && !body.classList.contains('hidden')) toggleTermCard();
+  }
+  /* Cierra el menú ⋮ al girar o cambiar de tamaño */
+  addEventListener('resize', closeNavMore);
+});
 
 /* ════════════════════════════════════
    SCANNER (cámara)
@@ -2229,6 +2362,13 @@ function toggleSound(){
   showToast(S.soundOn?'Sonido activado':'Sonido silenciado','info');
 }
 function beep(kind='add'){
+  /* Vibración corta al agregar / doble al haber error (Samsung, Motorola, Xiaomi…) */
+  try{
+    if(navigator.vibrate && isMobile()){
+      const pat = {add:12, scan:8, success:[18,40,18], error:[40,60,40]}[kind];
+      if(pat) navigator.vibrate(pat);
+    }
+  }catch(e){}
   if(!S.soundOn) return;
   try{
     _actx = _actx || new (window.AudioContext||window.webkitAudioContext)();
@@ -2340,7 +2480,7 @@ async function showPaymentModal(){
   if(!S.cart.length) return;
   const {subtotal, discountAmt, total} = cartTotals();
   g('payItemsSummary').innerHTML = S.cart.map(it=>
-    `<div class="flex justify-between text-slate-600"><span>${esc(it.name)} ×${it.quantity}</span><span class="font-semibold ml-2">${fmt(it.subtotal)}</span></div>`
+    `<div class="flex justify-between items-start gap-3 text-slate-600"><span class="min-w-0 break-anywhere">${esc(it.name)} <span class="text-slate-400 whitespace-nowrap">×${it.quantity}</span></span><span class="font-semibold shrink-0 whitespace-nowrap num">${fmt(it.subtotal)}</span></div>`
   ).join('') + `<div class="border-t border-slate-200 mt-1 pt-1 flex justify-between font-bold"><span>Subtotal</span><span>${fmt(subtotal)}</span></div>`;
   g('payDiscountRow').classList.toggle('hidden', !discountAmt);
   g('payDiscountRow').classList.toggle('flex', !!discountAmt);
@@ -2791,6 +2931,9 @@ function switchTab(tab){
   /* Content */
   document.querySelectorAll('.admin-content').forEach(el=>el.classList.add('hidden'));
   g('admin-'+tab)?.classList.remove('hidden');
+  g('adminScroll')?.scrollTo({top:0});
+  const mt = g('mtab-'+tab);
+  if(mt && isMobile()) mt.scrollIntoView({inline:'center', block:'nearest', behavior:'smooth'});
   if(tab==='metrics') loadMetrics('day');
   if(tab==='products') loadProducts();
   if(tab==='inventory') initInventoryTab();
@@ -3126,9 +3269,10 @@ function filterProdTable(){
     anterior: 'S.prodPage--;filterProdTable()', siguiente: 'S.prodPage++;filterProdTable()'
   });
   tbody.innerHTML=list.slice(desde, desde+PAGE_SIZE).map(p=>`<tr class="hover:bg-slate-50 transition">
-    <td class="px-3 sm:px-4 py-3"><code class="text-xs bg-slate-100 px-1.5 py-0.5 rounded text-slate-600">${esc(p.barcode)}</code></td>
-    <td class="px-3 sm:px-4 py-3 font-semibold text-slate-800 text-xs sm:text-sm max-w-[180px] break-anywhere">${p.favorite?'<i class="fa-solid fa-star text-amber-400 text-[10px] mr-1"></i>':''}${esc(p.name)}${expiryChip(p)}${(p.marca||p.contenido)?`<span class="block text-[10px] font-normal text-slate-400">${esc([p.marca,p.contenido].filter(Boolean).join(' · '))}</span>`:''}</td>
-    <td class="px-3 sm:px-4 py-3 text-right font-bold text-indigo-700 text-xs sm:text-sm whitespace-nowrap num">${fmt(p.price)}</td>
+    <td class="px-3 sm:px-4 py-3 m-hide"><code class="text-xs bg-slate-100 px-1.5 py-0.5 rounded text-slate-600">${esc(p.barcode)}</code></td>
+    <td class="r1c1 rspan px-3 sm:px-4 py-3 font-semibold text-slate-800 text-sm max-w-[180px] break-anywhere">${p.favorite?'<i class="fa-solid fa-star text-amber-400 text-[10px] mr-1"></i>':''}${esc(p.name)}${expiryChip(p)}${(p.marca||p.contenido)?`<span class="block text-[10px] font-normal text-slate-400">${esc([p.marca,p.contenido].filter(Boolean).join(' · '))}</span>`:''}
+      <span class="rc-flex sm:hidden flex flex-wrap items-center gap-1.5 mt-1.5 font-normal"><code class="text-[10px] bg-slate-100 px-1.5 py-0.5 rounded text-slate-500">${esc(p.barcode)}</code>${stockBadge(p)}${p.active===false?'<span class="text-[10px] px-2 py-0.5 rounded-full bg-red-100 text-red-600 font-medium">Inactivo</span>':''}</span></td>
+    <td class="r1c2 px-3 sm:px-4 py-3 text-right font-bold text-indigo-700 text-base sm:text-sm whitespace-nowrap num">${fmt(p.price)}</td>
     <td class="px-3 sm:px-4 py-3 text-right text-xs text-slate-500 hidden lg:table-cell whitespace-nowrap num">${p.cost?fmt(p.cost):'<span class="text-slate-300">—</span>'}</td>
     <td class="px-3 sm:px-4 py-3 text-right text-xs hidden lg:table-cell">${p.cost?`<span class="font-bold ${(p.price-p.cost)>=0?'text-emerald-600':'text-red-500'}">${fmt(p.price-p.cost)}</span><span class="text-slate-400 block text-[10px]">${p.price?(((p.price-p.cost)/p.price)*100).toFixed(0):0}%</span>`:'<span class="text-slate-300">—</span>'}</td>
     <td class="px-3 sm:px-4 py-3 text-center hidden md:table-cell">${stockBadge(p)}</td>
@@ -3136,10 +3280,10 @@ function filterProdTable(){
       <span class="text-xs px-2 py-0.5 rounded-full font-medium ${p.active!==false?'bg-emerald-100 text-emerald-700':'bg-red-100 text-red-600'}">
         ${p.active!==false?'Activo':'Inactivo'}</span>
     </td>
-    <td class="px-3 sm:px-4 py-3 text-right whitespace-nowrap">
-      <button onclick="openEntryModal('${p.barcode}')" title="Agregar inventario" class="text-emerald-600 hover:text-emerald-800 text-sm p-1 min-w-[32px] min-h-[32px]"><i class="fa-solid fa-dolly"></i></button>
-      <button onclick="editProduct('${p.barcode}')" class="text-indigo-500 hover:text-indigo-700 text-sm p-1 min-w-[32px] min-h-[32px] ml-1"><i class="fa-solid fa-pen-to-square"></i></button>
-      <button onclick="toggleProduct('${p.barcode}',${p.active!==false})" class="text-sm p-1 min-w-[32px] min-h-[32px] ml-1 ${p.active!==false?'text-red-400 hover:text-red-600':'text-emerald-500 hover:text-emerald-700'}">
+    <td class="r2c2 px-3 sm:px-4 py-3 text-right whitespace-nowrap">
+      <button onclick="openEntryModal('${p.barcode}')" title="Agregar inventario" aria-label="Agregar inventario" class="text-emerald-600 hover:text-emerald-800 text-sm p-1 min-w-[40px] min-h-[40px] sm:min-w-[32px] sm:min-h-[32px]"><i class="fa-solid fa-dolly"></i></button>
+      <button onclick="editProduct('${p.barcode}')" aria-label="Editar" class="text-indigo-500 hover:text-indigo-700 text-sm p-1 min-w-[40px] min-h-[40px] sm:min-w-[32px] sm:min-h-[32px] sm:ml-1"><i class="fa-solid fa-pen-to-square"></i></button>
+      <button onclick="toggleProduct('${p.barcode}',${p.active!==false})" aria-label="${p.active!==false?'Desactivar':'Activar'}" class="text-sm p-1 min-w-[40px] min-h-[40px] sm:min-w-[32px] sm:min-h-[32px] sm:ml-1 ${p.active!==false?'text-red-400 hover:text-red-600':'text-emerald-500 hover:text-emerald-700'}">
         <i class="fa-solid fa-${p.active!==false?'ban':'check'}"></i>
       </button>
     </td>
@@ -3738,17 +3882,17 @@ function renderShiftsTable(){
     const close=s.closeAt||s.closeISO?tsLabel(s.closeAt, s.closeISO):'—';
     const diff=s.difference;
     return `<tr class="hover:bg-slate-50 transition">
-      <td class="px-3 sm:px-4 py-3 text-xs sm:text-sm font-semibold text-slate-800 max-w-[160px] break-anywhere">${esc(s.sellerName||'–')}</td>
-      <td class="px-3 sm:px-4 py-3 text-xs text-slate-600 whitespace-nowrap">${open}</td>
+      <td class="r1c1 px-3 sm:px-4 py-3 text-sm font-semibold text-slate-800 max-w-[160px] break-anywhere">${esc(s.sellerName||'–')}</td>
+      <td class="r2c1 px-3 sm:px-4 py-3 text-xs text-slate-600 whitespace-nowrap" data-l="Abrió">${open}</td>
       <td class="px-3 sm:px-4 py-3 text-xs text-slate-600 whitespace-nowrap hidden sm:table-cell">${close}</td>
-      <td class="px-3 sm:px-4 py-3 text-right text-xs sm:text-sm">${fmt(s.openingCash||0)}</td>
+      <td class="r3c1 px-3 sm:px-4 py-3 text-left sm:text-right text-xs sm:text-sm" data-l="Fondo">${fmt(s.openingCash||0)}</td>
       <td class="px-3 sm:px-4 py-3 text-right text-xs sm:text-sm hidden md:table-cell">${s.expectedCash!=null?fmt(s.expectedCash):'—'}</td>
-      <td class="px-3 sm:px-4 py-3 text-right text-xs sm:text-sm font-bold ${diff==null?'text-slate-300':Math.abs(diff)<0.01?'text-emerald-600':diff<0?'text-red-500':'text-blue-600'}">${diff!=null?(diff>=0?'+':'')+fmt(diff):'—'}</td>
-      <td class="px-3 sm:px-4 py-3 text-center">
+      <td class="r2c2 px-3 sm:px-4 py-3 text-right text-sm font-bold num ${diff==null?'text-slate-300':Math.abs(diff)<0.01?'text-emerald-600':diff<0?'text-red-500':'text-blue-600'}">${diff!=null?(diff>=0?'+':'')+fmt(diff):'—'}</td>
+      <td class="r1c2 px-3 sm:px-4 py-3 text-center">
         <span class="text-xs px-2 py-0.5 rounded-full font-medium ${s.status==='open'?'bg-emerald-100 text-emerald-700':'bg-slate-100 text-slate-500'}">${s.status==='open'?'Abierto':'Cerrado'}</span>
       </td>
-      <td class="px-3 sm:px-4 py-3 text-right">
-        <button onclick="showShiftDetail('${s.id}')" class="text-indigo-500 hover:text-indigo-700 text-sm p-1 min-w-[32px] min-h-[32px]"><i class="fa-solid fa-eye"></i></button>
+      <td class="r3c2 px-3 sm:px-4 py-3 text-right">
+        <button onclick="showShiftDetail('${s.id}')" aria-label="Ver corte" class="text-indigo-500 hover:text-indigo-700 text-sm p-1 min-w-[40px] min-h-[40px] sm:min-w-[32px] sm:min-h-[32px]"><i class="fa-solid fa-eye"></i><span class="rc-inline sm:hidden ml-1.5 text-xs font-semibold">Ver corte</span></button>
       </td>
     </tr>`;
   }).join('');
@@ -4321,12 +4465,12 @@ function renderEntries(){
   tbody.innerHTML=list.map(e=>{
     const exp=e.expiry?expiryTag(e.expiry):'<span class="text-slate-300 text-xs">—</span>';
     return `<tr class="hover:bg-slate-50 transition">
-      <td class="px-3 py-3 text-xs text-slate-600 whitespace-nowrap">${tsLabel(e.timestamp, e.tsISO)}</td>
-      <td class="px-3 py-3 text-xs sm:text-sm font-semibold text-slate-800 max-w-[200px] break-anywhere">${esc(e.productName||'')}<span class="block text-[10px] text-slate-400 font-normal">${esc(e.productBarcode||'')}</span></td>
-      <td class="px-3 py-3 text-center text-sm font-black text-emerald-600">+${e.quantity||0}</td>
-      <td class="px-3 py-3 text-right text-xs text-slate-600 whitespace-nowrap num">${e.unitCost?fmt(e.unitCost):'—'}</td>
-      <td class="px-3 py-3 text-right text-xs font-bold text-slate-700 whitespace-nowrap num">${e.totalCost?fmt(e.totalCost):'—'}</td>
-      <td class="px-3 py-3">${exp}</td>
+      <td class="r2c1 px-3 py-3 text-xs text-slate-600 whitespace-nowrap">${tsLabel(e.timestamp, e.tsISO)}</td>
+      <td class="r1c1 px-3 py-3 text-sm font-semibold text-slate-800 max-w-[200px] break-anywhere">${esc(e.productName||'')}<span class="block text-[10px] text-slate-400 font-normal">${esc(e.productBarcode||'')}</span></td>
+      <td class="r1c2 px-3 py-3 text-center text-base sm:text-sm font-black text-emerald-600">+${e.quantity||0}</td>
+      <td class="r3c2 px-3 py-3 text-right text-xs text-slate-600 whitespace-nowrap num" data-l="c/u">${e.unitCost?fmt(e.unitCost):'—'}</td>
+      <td class="r2c2 px-3 py-3 text-right text-xs font-bold text-slate-700 whitespace-nowrap num">${e.totalCost?fmt(e.totalCost):'—'}</td>
+      <td class="r3c1 px-3 py-3">${exp}</td>
       <td class="px-3 py-3 text-xs text-slate-500 hidden md:table-cell">${esc(e.userName||'')}</td>
     </tr>`;
   }).join('');

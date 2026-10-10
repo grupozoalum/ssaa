@@ -132,3 +132,143 @@ body>nav{padding-left:max(.75rem,env(safe-area-inset-left))!important;
 @supports not (gap:1rem){
   .flex>*+*{margin-left:.375rem}
 }
+
+/* ════════════════════════════════════════════════════════════════
+   MÓVIL — iPhone (Safari), Samsung (Samsung Internet / Chrome),
+   Motorola, Xiaomi, Oppo… y plegables. Probado de 320 a 440 px.
+════════════════════════════════════════════════════════════════ */
+
+/* Tipografía del sistema: SF Pro en iPhone, Roboto / SamsungOne en Android */
+body{font-family:-apple-system,BlinkMacSystemFont,system-ui,'Segoe UI',Roboto,'Helvetica Neue',Arial,sans-serif;
+  -webkit-font-smoothing:antialiased;-moz-osx-font-smoothing:grayscale}
+/* Samsung Internet y Chrome tienen "modo oscuro forzado" que invierte colores
+   y deja botones ilegibles. El POS siempre se ve claro. */
+:root{color-scheme:only light}
+
+/* Sin menú de "copiar / buscar" al dejar presionado un botón (iOS y Samsung) */
+button,[role="button"],.quick-chip,nav{-webkit-touch-callout:none;-webkit-user-select:none;user-select:none}
+a,button,[onclick],label,summary{touch-action:manipulation}
+/* El scroll de una lista no arrastra a toda la página ni recarga (pull-to-refresh) */
+#posContent,#adminScroll,#cartListMobile,.sheet,.table-scroll{overscroll-behavior:contain}
+
+/* ── ÁREAS SEGURAS: notch / Dynamic Island / barra de gestos ──
+   Con la app instalada en la pantalla de inicio el contenido llega
+   hasta arriba: la barra se alarga para no quedar debajo de la hora. */
+#topNav{height:calc(3.5rem + env(safe-area-inset-top));padding-top:env(safe-area-inset-top)}
+#mainLayout,#cartDesktop{top:calc(3.5rem + env(safe-area-inset-top))}
+#mainLayout{padding-left:env(safe-area-inset-left);padding-right:env(safe-area-inset-right)}
+#toast{top:calc(1rem + env(safe-area-inset-top))!important}
+#adminPanel{padding-top:env(safe-area-inset-top);background:#030712}
+#adminScroll{padding-bottom:env(safe-area-inset-bottom)}
+#navMoreMenu{top:calc(3.5rem + env(safe-area-inset-top) + 4px)}
+
+/* ── BARRA SUPERIOR en celular ── */
+@media (max-width:639px){
+  /* Sonido, impresora y salir viven en el menú ⋮ */
+  #soundBtn,#hwBtn,#navUserArea{display:none!important}
+  #topNav .nav-btn{border-radius:12px}
+  #modeTag{max-width:34vw}
+}
+@media (max-width:359px){ #modeTag{display:none} }
+
+/* ── HOJAS INFERIORES (modales) ── */
+@media (max-width:639px){
+  .sheet{padding-bottom:max(1.25rem, calc(.75rem + env(safe-area-inset-bottom)))!important;
+         border-top-left-radius:1.25rem!important;border-top-right-radius:1.25rem!important}
+}
+/* Con el teclado abierto en iPhone, la hoja sube y no queda tapada */
+.sheet{max-height:min(90dvh, calc(var(--vvh, 100dvh) - 16px))}
+body > div.fixed.inset-0:has(> .sheet){bottom:var(--kb, 0px);transition:bottom .2s ease}
+
+/* Agarradera de la hoja del carrito (se puede deslizar hacia abajo) */
+.sheet-grip{position:absolute;top:6px;left:50%;transform:translateX(-50%);
+  width:40px;height:5px;border-radius:99px;background:#cbd5e1}
+#cartSheet{bottom:var(--kb, 0px);will-change:transform}
+#cartSheet.dragging{transition:none!important}
+
+/* ── CARRITO: barra inferior con el total (en vez de la burbuja) ──
+   En celular vertical y también en celular acostado (pantalla táctil baja). */
+#cartFab .fab-info{display:none}
+@media (max-width:767px), (pointer:coarse) and (max-height:500px){
+  #cartFab.has-items{left:max(.75rem, env(safe-area-inset-left));right:max(.75rem, env(safe-area-inset-right));
+    width:auto;height:58px;border-radius:18px;padding:0 1.1rem;justify-content:flex-start;gap:.9rem;
+    box-shadow:0 10px 30px -6px rgba(67,56,202,.55),0 2px 6px rgba(15,23,42,.15)}
+  #cartFab.has-items:hover{transform:none}
+  #cartFab.has-items .fab-info{display:flex;flex:1;align-items:center;justify-content:space-between;min-width:0}
+  #cartFab .fab-items{font-size:.85rem;font-weight:600;opacity:.9;white-space:nowrap}
+  #cartFab .fab-total{font-size:1.15rem;font-weight:900;white-space:nowrap;display:flex;align-items:center}
+  #posContent{padding-bottom:calc(6.5rem + env(safe-area-inset-bottom))!important}
+}
+
+/* ── VENTA en celular ── */
+@media (max-width:639px){
+  #stateProduct #pdPrice{font-size:1.9rem;line-height:1.1}
+  #qtyInput{width:4.25rem}
+  #stateWelcome{padding-top:2rem;padding-bottom:2rem}
+  #stateWelcome .text-5xl{font-size:2.5rem}
+}
+
+/* ── TABLAS → TARJETAS en celular ──
+   En pantallas chicas cada renglón se vuelve una tarjeta de 2 columnas.
+   Las celdas dicen en qué fila/columna van (r1c1, r1c2, …).
+   También en celular acostado (pantalla táctil de poca altura). */
+@media (max-width:639px), (pointer:coarse) and (max-height:500px){
+  .rtable .rc-flex{display:flex!important}
+  .rtable .rc-inline{display:inline!important}
+  .rtable{min-width:0!important}
+  .rtable thead{display:none}
+  .rtable tbody tr{display:grid;grid-template-columns:minmax(0,1fr) auto;column-gap:.75rem;row-gap:.3rem;
+    padding:.8rem .9rem;align-items:center}
+  .rtable tbody td{display:block;padding:0!important;max-width:none!important;text-align:left;white-space:normal}
+  .rtable tbody td.hidden,.rtable tbody td.m-hide{display:none!important}
+  .rtable tbody td[colspan]{grid-column:1 / -1;text-align:center;padding:1.5rem 0!important}
+  .rtable .r1c1{grid-column:1;grid-row:1}  .rtable .r1c2{grid-column:2;grid-row:1;text-align:right;justify-self:end}
+  .rtable .r2c1{grid-column:1;grid-row:2}  .rtable .r2c2{grid-column:2;grid-row:2;text-align:right;justify-self:end}
+  .rtable .r3c1{grid-column:1;grid-row:3}  .rtable .r3c2{grid-column:2;grid-row:3;text-align:right;justify-self:end}
+  .rtable .rspan{grid-row:1 / span 2}
+  .rtable td[data-l]::before{content:attr(data-l) ' ';color:#94a3b8;font-weight:500;font-size:11px}
+}
+
+/* ── Botones de cerrar (✕) con área táctil de dedo ── */
+@media (pointer:coarse){
+  button:has(> i.fa-xmark:only-child){min-width:40px;min-height:40px;display:inline-flex;align-items:center;justify-content:center}
+}
+
+/* ── Pestañas del admin en celular: la activa siempre visible ── */
+#adminMobTabs{scroll-padding-inline:1rem;-webkit-mask-image:linear-gradient(90deg,#000 88%,transparent);mask-image:linear-gradient(90deg,#000 88%,transparent)}
+@media (max-width:639px){
+  .admin-content select,.admin-content input[type=date],.admin-content input[type=text],.admin-content input[type=search]{min-height:44px}
+  .admin-content h1{font-size:1.15rem}
+}
+
+/* ── Menú ⋮ ── */
+.nm-item{display:flex;align-items:center;gap:.75rem;width:100%;padding:.8rem 1rem;font-size:.9rem;font-weight:600;color:#334155;text-align:left;min-height:48px}
+.nm-item:active{background:#f1f5f9}
+.nm-item i{width:1.25rem;text-align:center;color:#6366f1}
+.nm-item.danger,.nm-item.danger i{color:#ef4444}
+.nm-sep{height:1px;background:#f1f5f9;margin:.25rem 0}
+#navMoreMenu:not(.hidden){animation:popIn .14s ease}
+
+/* ── Plegables y pantallas muy angostas (Galaxy Z Fold cerrado 344px, 320px) ── */
+@media (max-width:359px){
+  #posContent{padding-left:.6rem!important;padding-right:.6rem!important}
+  #cartFab .fab-items{display:none}
+  .rtable tbody tr{padding:.7rem}
+}
+/* Teléfono acostado: la barra del carrito más baja y a la derecha */
+@media (max-height:500px) and (orientation:landscape){
+  #cartFab.has-items{height:50px;left:auto;width:min(360px,46vw)}
+  #topNav{height:calc(3rem + env(safe-area-inset-top))}
+  #mainLayout,#cartDesktop{top:calc(3rem + env(safe-area-inset-top))}
+}
+
+/* Movimiento reducido (accesibilidad en iOS/Android) */
+@media (prefers-reduced-motion:reduce){
+  *,*::before,*::after{animation-duration:.01ms!important;transition-duration:.01ms!important}
+}
+
+/* Barra superior en tablets / celular acostado: menos texto para que no se encime */
+@media (max-width:1023px){ #syncText,#navUserName{display:none!important} }
+@media (min-width:640px) and (max-width:1023px){ #brandName{max-width:140px} }
+/* Botones de forma de pago: ícono arriba, texto abajo */
+#payBtnCash i,#payBtnCard i,#payBtnMixed i{display:block;margin:0 auto 2px}
