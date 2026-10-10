@@ -7,6 +7,8 @@
   <meta name="theme-color" content="#4338ca"/>
   <meta name="apple-mobile-web-app-title" content="POS"/>
   <meta name="application-name" content="POS"/>
+  <!-- Versión: app.js comprueba que styles.css y app.js sean de esta misma versión -->
+  <meta name="pos-build" content="20261010d"/>
   <meta name="mobile-web-app-capable" content="yes"/>
   <meta name="apple-mobile-web-app-capable" content="yes"/>
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent"/>
@@ -20,7 +22,7 @@
   <script src="https://www.gstatic.com/firebasejs/10.7.1/firebase-app-compat.js"></script>
   <script src="https://www.gstatic.com/firebasejs/10.7.1/firebase-auth-compat.js"></script>
   <script src="https://www.gstatic.com/firebasejs/10.7.1/firebase-firestore-compat.js"></script>
-  <link rel="stylesheet" href="styles.css?v=20261010c"/>
+  <link rel="stylesheet" href="styles.css?v=20261010d"/>
 </head>
 <body class="bg-slate-100 overflow-hidden">
 
@@ -368,7 +370,7 @@
     <i class="fa-solid fa-cart-shopping text-xl"></i>
     <span id="cartFabCount" class="absolute -top-3 -right-3 bg-red-500 text-white text-[10px] font-black min-w-[20px] h-5 px-1 rounded-full flex items-center justify-center hidden">0</span>
   </span>
-  <span class="fab-info">
+  <span class="fab-info hidden">
     <span id="cartFabItems" class="fab-items"></span>
     <span class="fab-total"><span id="cartFabTotal" class="num"></span><i class="fa-solid fa-chevron-up text-xs ml-2 opacity-70"></i></span>
   </span>
@@ -1987,6 +1989,6 @@
 <!-- ▌TICKET PARA IMPRIMIR ▐ — solo se ve al imprimir desde el navegador -->
 <div id="ticketPrint" aria-hidden="true"></div>
 
-<script src="app.js?v=20261010c"></script>
+<script src="app.js?v=20261010d"></script>
 </body>
 </html>

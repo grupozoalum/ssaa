@@ -1,3 +1,5 @@
+/* Marca de versión: app.js la lee para saber si el navegador cargó este archivo o uno viejo */
+:root{--pos-css:"20261010d"}
 *{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
 body{font-family:'Segoe UI',system-ui,sans-serif;overscroll-behavior:none}
 /* Scanner line */
@@ -194,7 +196,7 @@ body > div.fixed.inset-0:has(> .sheet){bottom:var(--kb, 0px);transition:bottom .
     width:auto;height:58px;border-radius:18px;padding:0 1.1rem;justify-content:flex-start;gap:.9rem;
     box-shadow:0 10px 30px -6px rgba(67,56,202,.55),0 2px 6px rgba(15,23,42,.15)}
   #cartFab.has-items:hover{transform:none}
-  #cartFab.has-items .fab-info{display:flex;flex:1;align-items:center;justify-content:space-between;min-width:0}
+  #cartFab.has-items .fab-info{display:flex!important;flex:1;align-items:center;justify-content:space-between;min-width:0}
   #cartFab .fab-items{font-size:.85rem;font-weight:600;opacity:.9;white-space:nowrap}
   #cartFab .fab-total{font-size:1.15rem;font-weight:900;white-space:nowrap;display:flex;align-items:center}
   #posContent{padding-bottom:calc(6.5rem + env(safe-area-inset-bottom))!important}

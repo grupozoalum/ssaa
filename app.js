@@ -1444,6 +1444,61 @@ function closeNavMore(){
   g('navMoreBtn')?.setAttribute('aria-expanded','false');
 }
 
+/* ════════════════════════════════════════════════════════════════
+   ¿SE CARGARON LOS 3 ARCHIVOS DE LA MISMA VERSIÓN?
+   Si el navegador o el hosting se quedan con un styles.css o un
+   index.html viejo, el POS se ve roto. Aquí se detecta y se corrige:
+   1) CSS viejo  → se vuelve a pedir sin caché.
+   2) HTML viejo → se recarga la página una vez sin caché.
+   3) Si aun así no cuadra, el archivo del servidor ES viejo: se avisa
+      cuál hay que volver a subir.
+════════════════════════════════════════════════════════════════ */
+const POS_BUILD = '20261010d';
+function verificarVersionArchivos(intento = 0){
+  const meta = (document.querySelector('meta[name="pos-build"]')||{}).content || '';
+  const css  = getComputedStyle(document.documentElement).getPropertyValue('--pos-css').replace(/["'\s]/g,'');
+  const KEY  = 'posBuildReload';
+  if(meta === POS_BUILD && css === POS_BUILD){ try{ sessionStorage.removeItem(KEY); }catch(e){} return; }
+
+  /* 1) HTML al día pero CSS viejo: pedir styles.css con una URL nueva (se salta la caché) */
+  if(meta === POS_BUILD && intento === 0){
+    const viejo = [...document.querySelectorAll('link[rel="stylesheet"]')].find(l => /styles\.css/.test(l.getAttribute('href')||''));
+    if(viejo){
+      const nuevo = viejo.cloneNode();
+      nuevo.href = 'styles.css?v=' + POS_BUILD + '&t=' + Date.now();
+      nuevo.onload  = () => { viejo.remove(); setTimeout(() => verificarVersionArchivos(1), 30); };
+      nuevo.onerror = () => verificarVersionArchivos(1);
+      viejo.after(nuevo);
+      return;
+    }
+  }
+  /* 2) HTML viejo (o el CSS sigue mal): recargar una sola vez sin caché */
+  let yaRecargo = false;
+  try{ yaRecargo = sessionStorage.getItem(KEY) === POS_BUILD; }catch(e){ yaRecargo = true; }
+  if(!yaRecargo){
+    try{ sessionStorage.setItem(KEY, POS_BUILD); }catch(e){}
+    const u = new URL(location.href); u.searchParams.set('_v', Date.now());
+    location.replace(u.toString());
+    return;
+  }
+  /* 3) El servidor tiene un archivo viejo: avisar cuál */
+  const cual = meta !== POS_BUILD ? 'index.html' : 'styles.css';
+  const aviso = document.createElement('div');
+  aviso.setAttribute('role','alert');
+  aviso.style.cssText = 'position:fixed;left:12px;right:12px;bottom:calc(12px + env(safe-area-inset-bottom));z-index:9999;'
+    + 'background:#7f1d1d;color:#fff;padding:14px 16px;border-radius:14px;font:600 14px/1.4 system-ui,sans-serif;'
+    + 'box-shadow:0 10px 30px rgba(0,0,0,.35);max-width:560px;margin:0 auto';
+  aviso.innerHTML = '⚠️ El archivo <b>' + cual + '</b> de tu servidor es de una versión anterior, por eso el POS puede verse mal. '
+    + 'Vuelve a subir <b>index.html, styles.css y app.js</b> juntos, en la misma carpeta.'
+    + '<button style="display:block;margin-top:8px;background:#fff;color:#7f1d1d;border:0;border-radius:10px;padding:8px 14px;font-weight:800">Entendido</button>';
+  aviso.querySelector('button').onclick = () => aviso.remove();
+  document.body.appendChild(aviso);
+  console.warn('POS: versión distinta → html', meta, '· css', css, '· js', POS_BUILD);
+}
+/* Se revisa cuando ya cargaron las hojas de estilo */
+if(document.readyState === 'complete') setTimeout(verificarVersionArchivos, 0);
+else addEventListener('load', () => verificarVersionArchivos());
+
 /* Corre al terminar de cargar el script (usa g(), isMobile(), etc. definidos más abajo) */
 queueMicrotask(function mobileBoost(){
   const root = document.documentElement, ua = navigator.userAgent;
