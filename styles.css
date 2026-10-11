@@ -1,0 +1,309 @@
+/* Marca de versión: app.js la lee para saber si el navegador cargó este archivo o uno viejo */
+:root{--pos-css:"20261010e"}
+*{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+body{font-family:'Segoe UI',system-ui,sans-serif;overscroll-behavior:none}
+/* Scanner line */
+.scan-line{position:absolute;left:0;right:0;height:2px;background:linear-gradient(90deg,transparent,#818cf8,transparent);
+  box-shadow:0 0 8px #818cf8;animation:scanMove 1.8s ease-in-out infinite;pointer-events:none;z-index:2}
+@keyframes scanMove{0%{top:10%;opacity:0}15%{opacity:1}85%{opacity:1}100%{top:80%;opacity:0}}
+/* Admin tabs */
+.atab{color:#6b7280;transition:all .15s;cursor:pointer}
+.atab:hover{background:#1f2937;color:#e5e7eb}
+.atab.on{background:#4f46e5;color:#fff}
+/* Mobile admin tabs */
+.matab{color:#9ca3af;white-space:nowrap;flex-shrink:0;border-bottom:2px solid transparent;transition:all .15s;cursor:pointer}
+.matab.on{color:#818cf8;border-bottom-color:#818cf8}
+/* Period btns */
+.pbtn{transition:all .15s;cursor:pointer}
+.pbtn.on{background:#4f46e5;color:#fff;border-color:#4f46e5}
+/* Scrollbar */
+::-webkit-scrollbar{width:4px;height:4px}
+::-webkit-scrollbar-thumb{background:#cbd5e1;border-radius:4px}
+/* Toast */
+#toast{transition:transform .35s cubic-bezier(.34,1.56,.64,1)}
+#toast.show{transform:translateX(0)!important}
+/* Bottom sheet overlay */
+#cartSheet{transition:transform .3s cubic-bezier(.4,0,.2,1)}
+#cartSheet.open{transform:translateY(0)!important}
+/* QR */
+#tqr img,#tqr canvas{width:76px!important;height:76px!important}
+/* Ensure buttons are big enough on mobile */
+button,input,select{touch-action:manipulation}
+
+/* ── UI/UX boost additions ── */
+@keyframes pulseAdd{0%{transform:scale(1)}45%{transform:scale(1.04)}100%{transform:scale(1)}}
+.pulse-add{animation:pulseAdd .28s ease}
+@keyframes popIn{0%{opacity:0;transform:translateY(4px) scale(.97)}100%{opacity:1;transform:translateY(0) scale(1)}}
+.pop-in{animation:popIn .18s ease}
+.quick-chip{transition:transform .12s,box-shadow .12s;cursor:pointer}
+.quick-chip:active{transform:scale(.94)}
+.badge-low{background:#fee2e2;color:#b91c1c}
+.badge-mid{background:#fef3c7;color:#92400e}
+.badge-ok{background:#dcfce7;color:#15803d}
+.shift-dot{width:8px;height:8px;border-radius:9999px;display:inline-block}
+#confirmModal .cm-box, #receiptModal .rc-box{animation:popIn .18s ease}
+/* Los estilos del ticket viven en app.js (TICKET_CSS) */
+/* Customer-facing display */
+#customerDisplayScreen{background:radial-gradient(circle at 50% 0%,#4338ca,#1e1b4b 70%)}
+.cd-item{animation:popIn .25s ease}
+.cd-total{font-variant-numeric:tabular-nums}
+
+/* ── Hardware / connection boost ── */
+@keyframes ringPulse{0%{box-shadow:0 0 0 0 rgba(52,211,153,.55)}70%{box-shadow:0 0 0 8px rgba(52,211,153,0)}100%{box-shadow:0 0 0 0 rgba(52,211,153,0)}}
+.live-dot{animation:ringPulse 1.6s infinite}
+.hw-row{display:flex;align-items:center;justify-content:space-between;gap:.75rem;padding:.75rem;border:1px solid #e2e8f0;border-radius:.75rem}
+.bell-shake{animation:bellShake .5s ease}
+@keyframes bellShake{0%,100%{transform:rotate(0)}20%{transform:rotate(-12deg)}40%{transform:rotate(10deg)}60%{transform:rotate(-8deg)}80%{transform:rotate(6deg)}}
+#scanToastBurst{transition:opacity .25s, transform .25s}
+
+/* ════════════════════════════════════════════════════
+   RESPONSIVE — soporte para cualquier pantalla/navegador
+════════════════════════════════════════════════════ */
+html{-webkit-text-size-adjust:100%;text-size-adjust:100%}
+html,body{max-width:100%;overflow-x:hidden}
+/* Altura real del viewport en móviles (barra de direcciones dinámica) */
+body{height:100vh;height:100svh;height:100dvh}
+/* Evita que textos largos rompan tarjetas y tablas dentro de flex/grid */
+*{min-width:0}
+canvas{max-width:100%!important}
+img,svg,video{max-width:100%;height:auto}
+.break-anywhere{overflow-wrap:anywhere;word-break:break-word}
+.num{font-variant-numeric:tabular-nums}
+
+/* Contenedor de gráficas: altura fija para que Chart.js no se desborde */
+.chart-wrap{position:relative;width:100%;height:190px}
+@media (min-width:480px){ .chart-wrap{height:210px} }
+@media (min-width:768px){ .chart-wrap{height:240px} }
+@media (min-width:1280px){ .chart-wrap{height:270px} }
+.chart-wrap canvas{position:absolute;inset:0;width:100%!important;height:100%!important}
+.chart-wrap.donut{height:220px}
+@media (min-width:768px){ .chart-wrap.donut{height:250px} }
+
+/* Valores de KPI: se encogen solos en pantallas chicas */
+.kpi-val{font-weight:900;line-height:1.15;font-variant-numeric:tabular-nums;
+  overflow-wrap:anywhere;font-size:clamp(1.05rem,4.6vw,1.6rem)}
+@media (min-width:640px){ .kpi-val{font-size:clamp(1.15rem,2.2vw,1.6rem)} }
+
+/* Hojas / modales: alto seguro en móviles con barras dinámicas */
+.sheet{max-height:90vh;max-height:90svh;max-height:90dvh;overflow-y:auto;
+  -webkit-overflow-scrolling:touch}
+
+/* Scroll horizontal suave en tablas */
+.table-scroll{overflow-x:auto;-webkit-overflow-scrolling:touch;overscroll-behavior-x:contain}
+.scrollbar-none{scrollbar-width:none;-ms-overflow-style:none}
+.scrollbar-none::-webkit-scrollbar{display:none}
+
+/* Áreas seguras (notch / gesture bar de iPhone y Android) */
+body>nav{padding-left:max(.75rem,env(safe-area-inset-left))!important;
+         padding-right:max(.75rem,env(safe-area-inset-right))!important}
+@media (min-width:640px){
+  body>nav{padding-left:max(1rem,env(safe-area-inset-left))!important;
+           padding-right:max(1rem,env(safe-area-inset-right))!important}
+}
+.pb-safe{padding-bottom:calc(.75rem + env(safe-area-inset-bottom))}
+#cartFab{bottom:calc(1.25rem + env(safe-area-inset-bottom))}
+#cartSheet{padding-bottom:env(safe-area-inset-bottom);
+  max-height:82vh;max-height:82svh;max-height:82dvh}
+
+/* iOS Safari hace zoom si el input mide menos de 16px */
+@media (max-width:768px){
+  input,select,textarea{font-size:16px!important}
+}
+
+/* Celulares muy angostos (320–360px: SE, Redmi Go, J2…) */
+@media (max-width:359px){
+  .kpi-val{font-size:1rem}
+  .atab,.matab{font-size:.8rem}
+  #cartFab{transform:scale(.92)}
+}
+
+/* Teléfono en horizontal: menos aire para que quepa el contenido */
+@media (max-height:480px) and (orientation:landscape){
+  .chart-wrap{height:160px}
+  #cartSheet{max-height:94dvh}
+}
+
+/* Tablets y pantallas grandes: aprovechar el ancho */
+@media (min-width:1536px){
+  .admin-content{max-width:1500px;margin-left:auto;margin-right:auto}
+}
+
+/* Fallbacks para navegadores viejos sin gap en flex */
+@supports not (gap:1rem){
+  .flex>*+*{margin-left:.375rem}
+}
+
+/* ════════════════════════════════════════════════════════════════
+   MÓVIL — iPhone (Safari), Samsung (Samsung Internet / Chrome),
+   Motorola, Xiaomi, Oppo… y plegables. Probado de 320 a 440 px.
+════════════════════════════════════════════════════════════════ */
+
+/* Tipografía del sistema: SF Pro en iPhone, Roboto / SamsungOne en Android */
+body{font-family:-apple-system,BlinkMacSystemFont,system-ui,'Segoe UI',Roboto,'Helvetica Neue',Arial,sans-serif;
+  -webkit-font-smoothing:antialiased;-moz-osx-font-smoothing:grayscale}
+/* Samsung Internet y Chrome tienen "modo oscuro forzado" que invierte colores
+   y deja botones ilegibles. El POS siempre se ve claro. */
+:root{color-scheme:only light}
+
+/* Sin menú de "copiar / buscar" al dejar presionado un botón (iOS y Samsung) */
+button,[role="button"],.quick-chip,nav{-webkit-touch-callout:none;-webkit-user-select:none;user-select:none}
+a,button,[onclick],label,summary{touch-action:manipulation}
+/* El scroll de una lista no arrastra a toda la página ni recarga (pull-to-refresh) */
+#posContent,#adminScroll,#cartListMobile,.sheet,.table-scroll{overscroll-behavior:contain}
+
+/* ── ÁREAS SEGURAS: notch / Dynamic Island / barra de gestos ──
+   Con la app instalada en la pantalla de inicio el contenido llega
+   hasta arriba: la barra se alarga para no quedar debajo de la hora. */
+#topNav{height:calc(3.5rem + env(safe-area-inset-top));padding-top:env(safe-area-inset-top)}
+#mainLayout,#cartDesktop{top:calc(3.5rem + env(safe-area-inset-top))}
+#mainLayout{padding-left:env(safe-area-inset-left);padding-right:env(safe-area-inset-right)}
+#toast{top:calc(1rem + env(safe-area-inset-top))!important}
+#adminPanel{padding-top:env(safe-area-inset-top);background:#030712}
+#adminScroll{padding-bottom:env(safe-area-inset-bottom)}
+#navMoreMenu{top:calc(3.5rem + env(safe-area-inset-top) + 4px)}
+
+/* ── BARRA SUPERIOR en celular ── */
+@media (max-width:639px){
+  /* Sonido, impresora y salir viven en el menú ⋮ */
+  #soundBtn,#hwBtn,#navUserArea{display:none!important}
+  #topNav .nav-btn{border-radius:12px}
+  #modeTag{max-width:34vw}
+}
+@media (max-width:359px){ #modeTag{display:none} }
+
+/* ── HOJAS INFERIORES (modales) ── */
+@media (max-width:639px){
+  .sheet{padding-bottom:max(1.25rem, calc(.75rem + env(safe-area-inset-bottom)))!important;
+         border-top-left-radius:1.25rem!important;border-top-right-radius:1.25rem!important}
+}
+/* Con el teclado abierto en iPhone, la hoja sube y no queda tapada */
+.sheet{max-height:min(90dvh, calc(var(--vvh, 100dvh) - 16px))}
+body > div.fixed.inset-0:has(> .sheet){bottom:var(--kb, 0px);transition:bottom .2s ease}
+
+/* Agarradera de la hoja del carrito (se puede deslizar hacia abajo) */
+.sheet-grip{position:absolute;top:6px;left:50%;transform:translateX(-50%);
+  width:40px;height:5px;border-radius:99px;background:#cbd5e1}
+#cartSheet{bottom:var(--kb, 0px);will-change:transform}
+#cartSheet.dragging{transition:none!important}
+
+/* ── CARRITO: barra inferior con el total (en vez de la burbuja) ──
+   En celular vertical y también en celular acostado (pantalla táctil baja). */
+#cartFab .fab-info{display:none}
+@media (max-width:767px), (pointer:coarse) and (max-height:500px){
+  #cartFab.has-items{left:max(.75rem, env(safe-area-inset-left));right:max(.75rem, env(safe-area-inset-right));
+    width:auto;height:58px;border-radius:18px;padding:0 1.1rem;justify-content:flex-start;gap:.9rem;
+    box-shadow:0 10px 30px -6px rgba(67,56,202,.55),0 2px 6px rgba(15,23,42,.15)}
+  #cartFab.has-items:hover{transform:none}
+  #cartFab.has-items .fab-info{display:flex!important;flex:1;align-items:center;justify-content:space-between;min-width:0}
+  #cartFab .fab-items{font-size:.85rem;font-weight:600;opacity:.9;white-space:nowrap}
+  #cartFab .fab-total{font-size:1.15rem;font-weight:900;white-space:nowrap;display:flex;align-items:center}
+}
+
+/* ── VENTA en celular ── */
+@media (max-width:639px){
+  #stateProduct #pdPrice{font-size:1.9rem;line-height:1.1}
+  #qtyInput{width:4.25rem}
+  #stateWelcome{padding-top:2rem;padding-bottom:2rem}
+  #stateWelcome .text-5xl{font-size:2.5rem}
+}
+
+/* ── TABLAS → TARJETAS en celular ──
+   En pantallas chicas cada renglón se vuelve una tarjeta de 2 columnas.
+   Las celdas dicen en qué fila/columna van (r1c1, r1c2, …).
+   También en celular acostado (pantalla táctil de poca altura). */
+@media (max-width:639px), (pointer:coarse) and (max-height:500px){
+  .rtable .rc-flex{display:flex!important}
+  .rtable .rc-inline{display:inline!important}
+  .rtable{min-width:0!important}
+  .rtable thead{display:none}
+  .rtable tbody tr{display:grid;grid-template-columns:minmax(0,1fr) auto;column-gap:.75rem;row-gap:.3rem;
+    padding:.8rem .9rem;align-items:center}
+  .rtable tbody td{display:block;padding:0!important;max-width:none!important;text-align:left;white-space:normal}
+  .rtable tbody td.hidden,.rtable tbody td.m-hide{display:none!important}
+  .rtable tbody td[colspan]{grid-column:1 / -1;text-align:center;padding:1.5rem 0!important}
+  .rtable .r1c1{grid-column:1;grid-row:1}  .rtable .r1c2{grid-column:2;grid-row:1;text-align:right;justify-self:end}
+  .rtable .r2c1{grid-column:1;grid-row:2}  .rtable .r2c2{grid-column:2;grid-row:2;text-align:right;justify-self:end}
+  .rtable .r3c1{grid-column:1;grid-row:3}  .rtable .r3c2{grid-column:2;grid-row:3;text-align:right;justify-self:end}
+  .rtable .rspan{grid-row:1 / span 2}
+  .rtable td[data-l]::before{content:attr(data-l) ' ';color:#94a3b8;font-weight:500;font-size:11px}
+}
+
+/* ── Botones de cerrar (✕) con área táctil de dedo ── */
+@media (pointer:coarse){
+  button:has(> i.fa-xmark:only-child){min-width:40px;min-height:40px;display:inline-flex;align-items:center;justify-content:center}
+}
+
+/* ── Pestañas del admin en celular: la activa siempre visible ── */
+#adminMobTabs{scroll-padding-inline:1rem;-webkit-mask-image:linear-gradient(90deg,#000 88%,transparent);mask-image:linear-gradient(90deg,#000 88%,transparent)}
+@media (max-width:639px){
+  .admin-content select,.admin-content input[type=date],.admin-content input[type=text],.admin-content input[type=search]{min-height:44px}
+  .admin-content h1{font-size:1.15rem}
+}
+
+/* ── Menú ⋮ ── */
+.nm-item{display:flex;align-items:center;gap:.75rem;width:100%;padding:.8rem 1rem;font-size:.9rem;font-weight:600;color:#334155;text-align:left;min-height:48px}
+.nm-item:active{background:#f1f5f9}
+.nm-item i{width:1.25rem;text-align:center;color:#6366f1}
+.nm-item.danger,.nm-item.danger i{color:#ef4444}
+.nm-sep{height:1px;background:#f1f5f9;margin:.25rem 0}
+#navMoreMenu:not(.hidden){animation:popIn .14s ease}
+
+/* ── Plegables y pantallas muy angostas (Galaxy Z Fold cerrado 344px, 320px) ── */
+@media (max-width:359px){
+  #posContent{padding-left:.6rem!important;padding-right:.6rem!important}
+  #cartFab .fab-items{display:none}
+  .rtable tbody tr{padding:.7rem}
+}
+/* Teléfono acostado: la barra del carrito más baja y a la derecha */
+@media (max-height:500px) and (orientation:landscape){
+  #cartFab.has-items{height:50px;left:auto;width:min(360px,46vw)}
+  #topNav{height:calc(3rem + env(safe-area-inset-top))}
+  #mainLayout,#cartDesktop{top:calc(3rem + env(safe-area-inset-top))}
+}
+
+/* Movimiento reducido (accesibilidad en iOS/Android) */
+@media (prefers-reduced-motion:reduce){
+  *,*::before,*::after{animation-duration:.01ms!important;transition-duration:.01ms!important}
+}
+
+/* Barra superior en tablets / celular acostado: menos texto para que no se encime */
+@media (max-width:1023px){ #syncText,#navUserName{display:none!important} }
+@media (min-width:640px) and (max-width:1023px){ #brandName{max-width:140px} }
+/* Botones de forma de pago: ícono arriba, texto abajo */
+#payBtnCash i,#payBtnCard i,#payBtnMixed i{display:block;margin:0 auto 2px}
+
+/* ════════════════════════════════════════════════════════════════
+   PANTALLA DE VENTA — la venta actual siempre a la vista
+════════════════════════════════════════════════════════════════ */
+/* El carrito escondido (burbuja / hoja / panel lateral) ya no se usa */
+#cartFab,#cartSheet,#cartDesktop,#cartBackdrop{display:none!important}
+
+/* Vendiendo: arriba solo aparecen avisos (no encontrado, granel…) cuando hay */
+.pos-selling #posContent{padding-bottom:0}
+.pos-selling #posContent:not(:has(> :not(.hidden))){display:none}
+.pos-selling #stateWelcome{display:none!important}
+/* Celular: espacio para la barra de cobro de abajo */
+@media (max-width:767px){
+  .pos-selling #ticketArea{padding-bottom:calc(6.4rem + env(safe-area-inset-bottom))}
+}
+/* Acceso rápido más compacto dentro de la venta */
+#ticketArea .quick-chip{height:56px}
+
+/* Renglón recién escaneado: destello verde */
+@keyframes tkFlash{0%{background:#d1fae5}100%{background:transparent}}
+.tk-flash{animation:tkFlash 1.1s ease-out}
+.tk-row:hover{background:#f8fafc}
+
+/* Teclas de atajo */
+.kbd-key{display:inline-flex;align-items:center;justify-content:center;min-width:1.9em;padding:.12em .45em;border-radius:.4em;
+  font:800 .7rem/1.2 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;background:rgba(255,255,255,.22);color:inherit;
+  border:1px solid rgba(255,255,255,.35);box-shadow:0 1px 0 rgba(0,0,0,.15)}
+.kbd-key.kbd-light{background:#f1f5f9;color:#64748b;border-color:#e2e8f0}
+/* En la ventana de cobro, la tecla va en la esquina del botón */
+#payBtnCash .kbd-key,#payBtnCard .kbd-key,#payBtnMixed .kbd-key{position:absolute;top:4px;right:5px;font-size:.6rem;min-width:0;padding:.05em .35em}
+@media (pointer:coarse){ .kbd-key{display:none} #payBtnCash .kbd-key,#payBtnCard .kbd-key,#payBtnMixed .kbd-key{display:none} }
+#payBtnCash,#payBtnCard,#payBtnMixed{position:relative}
+/* El estado del escáner remoto ya vive en Admin → Hardware */
+#syncText{display:none!important}
+/* Celular acostado: más espacio para la lista (sin accesos rápidos) */
+@media (max-height:500px) and (orientation:landscape){ #ticketArea #quickProdsCard{display:none!important} }

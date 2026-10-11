@@ -8,7 +8,7 @@
   <meta name="apple-mobile-web-app-title" content="POS"/>
   <meta name="application-name" content="POS"/>
   <!-- Versión: app.js comprueba que styles.css y app.js sean de esta misma versión -->
-  <meta name="pos-build" content="20261010d"/>
+  <meta name="pos-build" content="20261010e"/>
   <meta name="mobile-web-app-capable" content="yes"/>
   <meta name="apple-mobile-web-app-capable" content="yes"/>
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent"/>
@@ -22,7 +22,7 @@
   <script src="https://www.gstatic.com/firebasejs/10.7.1/firebase-app-compat.js"></script>
   <script src="https://www.gstatic.com/firebasejs/10.7.1/firebase-auth-compat.js"></script>
   <script src="https://www.gstatic.com/firebasejs/10.7.1/firebase-firestore-compat.js"></script>
-  <link rel="stylesheet" href="styles.css?v=20261010d"/>
+  <link rel="stylesheet" href="styles.css?v=20261010e"/>
 </head>
 <body class="bg-slate-100 overflow-hidden">
 
@@ -140,8 +140,9 @@
       </div>
     </div>
 
-    <!-- Scrollable content -->
-    <div class="flex-1 overflow-y-auto p-3 space-y-3 pb-24 md:pb-4" id="posContent">
+    <!-- Avisos y producto en turno (no encontrado, granel, búsqueda por nombre).
+         Sin sesión es la pantalla completa de "consulta de precios". -->
+    <div class="flex-1 overflow-y-auto p-3 space-y-3" id="posContent">
 
       <!-- Banner modo sin conexión -->
       <div id="offlineBanner" class="hidden bg-amber-50 border border-amber-300 rounded-xl p-3 flex items-center gap-3">
@@ -211,7 +212,7 @@
           <div class="flex items-center gap-2">
             <div class="flex items-center border border-slate-200 rounded-xl overflow-hidden">
               <button id="qtyMinusBtn" onclick="changeQty(-1)" class="px-3 py-3 bg-slate-50 hover:bg-slate-100 active:bg-slate-200 font-bold text-slate-600 text-lg leading-none min-w-[44px]">−</button>
-              <input id="qtyInput" type="number" step="any" value="1" min="0.001" inputmode="decimal" enterkeyhint="done"
+              <input id="qtyInput" type="number" step="any" value="1" min="0.001" inputmode="decimal" enterkeyhint="done" onkeydown="if(event.key==='Enter'){event.preventDefault();addToCart();}"
                 class="w-20 text-center py-3 text-sm font-bold border-0 focus:outline-none placeholder-slate-400">
               <button id="qtyPlusBtn" onclick="changeQty(1)" class="px-3 py-3 bg-slate-50 hover:bg-slate-100 active:bg-slate-200 font-bold text-slate-600 text-lg leading-none min-w-[44px]">+</button>
             </div>
@@ -231,62 +232,88 @@
         </div>
       </div>
 
-      <!-- Terminal sync card -->
-      <div id="terminalCard" class="bg-white rounded-xl border border-slate-200 shadow-sm">
-        <button onclick="toggleTermCard()" class="w-full flex items-center justify-between px-4 py-3">
-          <div class="flex items-center gap-2 text-sm font-semibold text-slate-700">
-            <i class="fa-solid fa-network-wired text-indigo-500"></i>Escáner remoto (celular)
-            <span id="termLiveDot" class="hidden w-2 h-2 rounded-full bg-emerald-400 live-dot"></span>
-          </div>
-          <i id="termChevron" class="fa-solid fa-chevron-down text-slate-400 text-xs transition-transform duration-200"></i>
-        </button>
-        <div id="termCardBody" class="px-4 pb-4 flex gap-3 items-start">
-          <div id="tqr" class="w-20 h-20 shrink-0 bg-slate-50 rounded-lg border border-slate-200 overflow-hidden flex items-center justify-center"></div>
-          <div class="flex-1 min-w-0">
-            <p class="text-xs text-slate-400 mb-0.5">ID de esta terminal</p>
-            <code id="terminalIdEl" class="text-xs bg-slate-100 text-slate-700 px-2 py-0.5 rounded block font-mono mb-2 truncate"></code>
-            <p id="termStatusLine" class="text-xs text-slate-400 leading-relaxed">Escanea el QR con tu celular para usarlo como escáner inalámbrico.</p>
-            <div class="flex gap-3 mt-2">
-              <button onclick="copyScanLink()" class="py-2 text-xs text-indigo-600 hover:text-indigo-800 font-medium active:text-indigo-900">
-                <i class="fa-solid fa-copy mr-1"></i>Copiar enlace
-              </button>
-              <button onclick="forgetRemoteDevice()" class="py-2 text-xs text-slate-400 hover:text-red-500 font-medium">
-                <i class="fa-solid fa-link-slash mr-1"></i>Olvidar
-              </button>
-            </div>
-          </div>
-        </div>
+      <!-- Welcome -->
+      <div id="stateWelcome" class="flex flex-col items-center justify-center py-12 sm:py-16 text-center px-4">
+        <div class="text-5xl sm:text-6xl mb-4">🔍</div>
+        <h2 class="text-lg sm:text-xl font-bold text-slate-600 mb-2">Consulta de precios</h2>
+        <p class="text-slate-400 text-sm max-w-xs leading-relaxed">Escanea un código de barras o escribe el nombre del producto para ver su precio.</p>
+
       </div>
 
-      <!-- Customer display link card (seller/admin only) -->
-      <div id="displayCard" class="hidden bg-white rounded-xl border border-slate-200 shadow-sm">
-        <button onclick="toggleDisplayCard()" class="w-full flex items-center justify-between px-4 py-3">
-          <div class="flex items-center gap-2 text-sm font-semibold text-slate-700">
-            <i class="fa-solid fa-tv text-violet-500"></i>Pantalla para el cliente
-          </div>
-          <i id="displayChevron" class="fa-solid fa-chevron-down text-slate-400 text-xs transition-transform duration-200" style="transform:rotate(-90deg)"></i>
-        </button>
-        <div id="displayCardBody" class="hidden px-4 pb-4 flex gap-3 items-start">
-          <div id="cqr" class="w-20 h-20 shrink-0 bg-slate-50 rounded-lg border border-slate-200 overflow-hidden flex items-center justify-center"></div>
-          <div class="flex-1 min-w-0">
-            <p class="text-xs text-slate-400 leading-relaxed">Abre este enlace en una tablet o segunda pantalla orientada al cliente: verá su carrito y total en tiempo real.</p>
-            <button onclick="copyDisplayLink()" class="mt-2 text-xs text-violet-600 hover:text-violet-800 font-medium active:text-violet-900">
-              <i class="fa-solid fa-copy mr-1"></i>Copiar enlace
-            </button>
-          </div>
-        </div>
-      </div>
+    </div><!-- /posContent -->
 
-      <!-- Quick access: frequent / favorite products (seller/admin only) -->
-      <div id="quickProdsCard" class="hidden bg-white rounded-xl border border-slate-200 shadow-sm p-3">
-        <p class="text-xs font-semibold text-slate-500 mb-2"><i class="fa-solid fa-bolt text-amber-400 mr-1"></i>Acceso rápido</p>
+    <!-- ▌VENTA ACTUAL ▐ lo que se va escaneando aparece aquí solo -->
+    <section id="ticketArea" class="flex-1 min-h-0 flex flex-col px-2 sm:px-3 pb-2 sm:pb-3" style="display:none">
+      <!-- Acceso rápido: favoritos y más vendidos -->
+      <div id="quickProdsCard" class="hidden pt-2 sm:pt-3 shrink-0">
         <div id="quickProdsGrid" class="flex gap-2 overflow-x-auto scrollbar-none pb-1"></div>
       </div>
 
-      <!-- Recargas celulares (seller/admin only) -->
-      <button id="rechargeCard" onclick="openRechargeModal()" class="hidden w-full bg-gradient-to-r from-violet-600 to-indigo-600 text-white rounded-xl p-4 shadow-sm items-center justify-between text-left">
+
+      <div class="flex-1 min-h-0 mt-2 sm:mt-3 bg-white rounded-xl border border-slate-200 shadow-sm flex flex-col overflow-hidden">
+        <div class="flex items-center justify-between gap-2 px-3 sm:px-4 py-2 border-b border-slate-100 shrink-0 min-h-[48px]">
+          <p class="text-sm font-bold text-slate-700 truncate"><i class="fa-solid fa-receipt text-indigo-500 mr-1.5"></i>Venta<span class="hidden sm:inline"> actual</span> <span id="ticketCount" class="hidden sm:inline text-slate-400 font-semibold"></span></p>
+          <!-- Acciones en celular (en computadora están en el panel de la derecha) -->
+          <div class="flex items-center gap-1 md:hidden shrink-0">
+            <button id="rechargeBtnMobile" onclick="openRechargeModal()" aria-label="Recarga celular" class="hidden w-10 h-10 rounded-lg text-violet-600 bg-violet-50 active:bg-violet-100 flex items-center justify-center"><i class="fa-solid fa-mobile-screen-button"></i></button>
+            <button onclick="openDiscountModal()" aria-label="Descuento" class="w-10 h-10 rounded-lg text-indigo-600 bg-indigo-50 active:bg-indigo-100 flex items-center justify-center"><i class="fa-solid fa-tag"></i></button>
+            <button onclick="holdSale()" aria-label="Guardar venta" class="w-10 h-10 rounded-lg text-amber-600 bg-amber-50 active:bg-amber-100 flex items-center justify-center"><i class="fa-solid fa-pause"></i></button>
+            <button onclick="showParkedModal()" aria-label="Ventas guardadas" class="relative w-10 h-10 rounded-lg text-slate-600 bg-slate-100 active:bg-slate-200 flex items-center justify-center">
+              <i class="fa-solid fa-clock-rotate-left"></i>
+              <span id="parkCountTicket" class="hidden absolute -top-1 -right-1 bg-red-500 text-white text-[9px] font-black w-4 h-4 rounded-full flex items-center justify-center">0</span>
+            </button>
+            <button onclick="clearCart()" aria-label="Vaciar venta" class="w-10 h-10 rounded-lg text-red-500 bg-red-50 active:bg-red-100 flex items-center justify-center"><i class="fa-solid fa-trash"></i></button>
+          </div>
+        </div>
+        <!-- Encabezado de columnas (computadora) -->
+        <div class="hidden lg:grid grid-cols-[minmax(0,1fr)_132px_92px_108px_44px] gap-x-3 px-4 py-2 text-[11px] font-bold uppercase tracking-wide text-slate-400 border-b border-slate-100 shrink-0">
+          <span>Producto</span><span class="text-center">Cantidad</span><span class="text-right">Precio</span><span class="text-right">Importe</span><span></span>
+        </div>
+        <div id="ticketList" class="flex-1 min-h-0 overflow-y-auto overscroll-contain"></div>
+      </div>
+    </section>
+  </div><!-- /left -->
+
+  <!-- ▌PANEL DE COBRO (computadora) ▐ -->
+  <aside id="ticketSide" class="hidden md:flex w-[300px] lg:w-[360px] shrink-0 bg-white border-l border-slate-200 flex-col overflow-y-auto" style="display:none">
+    <div class="p-5 border-b border-slate-100">
+      <div class="flex justify-between text-sm text-slate-500 mb-1"><span>Artículos</span><span id="sideCount" class="font-semibold num">0</span></div>
+      <div class="flex justify-between text-sm text-slate-500 mb-1"><span>Subtotal</span><span id="sideSub" class="font-semibold num">$0.00</span></div>
+      <div id="sideDiscRow" class="hidden justify-between text-sm text-emerald-600 mb-1">
+        <span>Descuento <button onclick="removeDiscount()" aria-label="Quitar descuento" class="text-red-400 ml-0.5"><i class="fa-solid fa-xmark"></i></button></span><span id="sideDisc" class="font-semibold num">-$0.00</span>
+      </div>
+      <p class="text-[11px] font-bold text-slate-400 uppercase tracking-widest mt-4">Total a cobrar</p>
+      <p id="sideTotal" class="text-4xl lg:text-5xl font-black text-slate-900 num leading-none mt-1 break-anywhere">$0.00</p>
+    </div>
+    <div class="p-4 space-y-2">
+      <button id="btnPayCash" onclick="cobrar('cash')" disabled
+        class="w-full flex items-center justify-between gap-2 bg-emerald-600 hover:bg-emerald-700 active:bg-emerald-800 disabled:bg-slate-200 disabled:text-slate-400 disabled:cursor-not-allowed text-white rounded-2xl px-5 py-4 text-lg font-black min-h-[64px] transition shadow-sm">
+        <span><i class="fa-solid fa-money-bill-wave mr-2"></i>Efectivo</span><kbd class="kbd-key">F4</kbd>
+      </button>
+      <div class="grid grid-cols-2 gap-2">
+        <button id="btnPayCard" onclick="cobrar('card')" disabled
+          class="flex items-center justify-between gap-1 bg-blue-600 hover:bg-blue-700 active:bg-blue-800 disabled:bg-slate-200 disabled:text-slate-400 disabled:cursor-not-allowed text-white rounded-xl px-3 py-3 text-sm font-bold min-h-[52px] transition">
+          <span><i class="fa-solid fa-credit-card mr-1.5"></i>Tarjeta</span><kbd class="kbd-key">F2</kbd>
+        </button>
+        <button id="btnPayMixed" onclick="cobrar('mixed')" disabled
+          class="flex items-center justify-between gap-1 bg-violet-600 hover:bg-violet-700 active:bg-violet-800 disabled:bg-slate-200 disabled:text-slate-400 disabled:cursor-not-allowed text-white rounded-xl px-3 py-3 text-sm font-bold min-h-[52px] transition">
+          <span><i class="fa-solid fa-layer-group mr-1.5"></i>Mixto</span><kbd class="kbd-key">F3</kbd>
+        </button>
+      </div>
+    </div>
+    <div class="px-4 pb-4 mt-auto space-y-2">
+      <div class="grid grid-cols-3 gap-2">
+        <button onclick="openDiscountModal()" class="text-xs font-semibold text-indigo-600 bg-indigo-50 hover:bg-indigo-100 py-2.5 rounded-lg min-h-[42px]"><i class="fa-solid fa-tag block mb-0.5"></i>Descuento</button>
+        <button onclick="holdSale()" class="text-xs font-semibold text-amber-600 bg-amber-50 hover:bg-amber-100 py-2.5 rounded-lg min-h-[42px]"><i class="fa-solid fa-pause block mb-0.5"></i>Guardar</button>
+        <button onclick="showParkedModal()" class="relative text-xs font-semibold text-slate-600 bg-slate-100 hover:bg-slate-200 py-2.5 rounded-lg min-h-[42px]">
+          <i class="fa-solid fa-clock-rotate-left block mb-0.5"></i>Guardadas
+          <span id="parkCountSide" class="hidden absolute -top-1.5 -right-1.5 bg-red-500 text-white text-[9px] font-black w-4 h-4 rounded-full flex items-center justify-center">0</span>
+        </button>
+      </div>
+      <!-- Recargas celulares -->
+      <button id="rechargeCard" onclick="openRechargeModal()" class="hidden w-full bg-gradient-to-r from-violet-600 to-indigo-600 text-white rounded-xl px-4 py-3 shadow-sm items-center justify-between text-left">
         <div class="flex items-center gap-3">
-          <div class="w-10 h-10 rounded-full bg-white/15 flex items-center justify-center shrink-0">
+          <div class="w-9 h-9 rounded-full bg-white/15 flex items-center justify-center shrink-0">
             <i class="fa-solid fa-mobile-screen-button text-lg"></i>
           </div>
           <div>
@@ -297,31 +324,30 @@
         <i class="fa-solid fa-chevron-right text-violet-200"></i>
       </button>
 
-      <!-- Welcome -->
-      <div id="stateWelcome" class="flex flex-col items-center justify-center py-12 sm:py-16 text-center px-4">
-        <div class="text-5xl sm:text-6xl mb-4">🔍</div>
-        <h2 class="text-lg sm:text-xl font-bold text-slate-600 mb-2">Listo para escanear</h2>
-        <p class="text-slate-400 text-sm max-w-xs leading-relaxed">Escanea un código de barras (cámara, lector USB/Bluetooth o celular remoto) o escribe el nombre del producto.</p>
-        <p class="text-xs text-slate-300 mt-5 hidden sm:block">
-          <kbd class="bg-slate-100 text-slate-500 px-2 py-1 rounded border border-slate-300 font-sans">Ctrl + Shift + A</kbd>
-          <span class="mx-2">·</span>Panel Admin
-          <span class="mx-2">·</span>
-          <kbd class="bg-slate-100 text-slate-500 px-2 py-1 rounded border border-slate-300 font-sans">F2</kbd> Buscar
-          <span class="mx-2">·</span>
-          <kbd class="bg-slate-100 text-slate-500 px-2 py-1 rounded border border-slate-300 font-sans">F4</kbd> Cobrar
-        </p>
-      </div>
-
-    </div><!-- /posContent -->
-  </div><!-- /left -->
-
-  <!-- RIGHT: CART SIDEBAR (desktop only) -->
-  <div id="cartSidebar" class="hidden md:hidden w-80 bg-white border-l border-slate-200 flex-col shadow-xl shrink-0">
-    <!-- same cart content injected by JS -->
-  </div>
+      <button onclick="clearCart()" class="w-full text-red-500 hover:text-red-600 hover:bg-red-50 text-xs font-semibold py-2.5 rounded-lg min-h-[40px] flex items-center justify-center gap-2">
+        <i class="fa-solid fa-trash"></i>Vaciar venta <kbd class="kbd-key kbd-light">F8</kbd>
+      </button>
+      <p class="text-[10px] text-center text-slate-400 pt-1">F1 buscar · F4 efectivo · F2 tarjeta · F3 mixto · Enter confirma</p>
+    </div>
+  </aside>
 
 </div><!-- /main layout -->
 
+<!-- ▌COBRO EN CELULAR ▐ total + burbuja de dinero -->
+<div id="ticketBar" class="flex md:hidden fixed inset-x-0 bottom-0 z-40 bg-white border-t border-slate-200 items-center gap-3 px-4 pt-3"
+  style="display:none;padding-bottom:max(.75rem, env(safe-area-inset-bottom));box-shadow:0 -10px 30px -16px rgba(15,23,42,.35)">
+  <div class="flex-1 min-w-0">
+    <p id="barCount" class="text-xs font-semibold text-slate-500">Sin productos</p>
+    <p id="barTotal" class="text-[1.7rem] font-black text-slate-900 num leading-tight truncate">$0.00</p>
+  </div>
+  <button id="payBubble" onclick="cobrar('cash')" disabled aria-label="Cobrar"
+    class="shrink-0 w-16 h-16 rounded-full bg-emerald-600 active:bg-emerald-700 active:scale-95 disabled:bg-slate-300 text-white text-2xl flex items-center justify-center transition"
+    style="box-shadow:0 10px 24px -8px rgba(5,150,105,.7)">
+    <i class="fa-solid fa-money-bill-wave"></i>
+  </button>
+</div>
+
+<!-- ▌(ya no se usa: el carrito ahora está siempre a la vista) ▐ -->
 <!-- ▌MOBILE CART BOTTOM SHEET ▐ -->
 <div id="cartSheet"
   class="md:hidden fixed inset-x-0 bottom-0 z-50 bg-white rounded-t-2xl shadow-2xl border-t border-slate-200 flex flex-col transform translate-y-full">
@@ -942,7 +968,55 @@
 
     <!-- ─ HARDWARE (admin) ─ -->
     <div id="admin-hardware" class="admin-content hidden p-3 sm:p-5">
-      <h1 class="text-lg sm:text-xl font-black text-slate-800 mb-4">🔌 Hardware conectado</h1>
+      <h1 class="text-lg sm:text-xl font-black text-slate-800 mb-1">🔌 Hardware y dispositivos</h1>
+      <p class="text-xs text-slate-400 mb-4 max-w-3xl">El escáner remoto y la pantalla del cliente se vinculan con <b>esta</b> caja: abre esta pestaña en la computadora o tablet donde cobras.</p>
+      <div class="grid grid-cols-1 lg:grid-cols-2 gap-3 max-w-3xl mb-3">
+    <!-- Terminal sync card -->
+    <div id="terminalCard" class="bg-white rounded-xl border border-slate-200 shadow-sm">
+      <button onclick="toggleTermCard()" class="w-full flex items-center justify-between px-4 py-3">
+        <div class="flex items-center gap-2 text-sm font-semibold text-slate-700">
+          <i class="fa-solid fa-network-wired text-indigo-500"></i>Escáner remoto (celular)
+          <span id="termLiveDot" class="hidden w-2 h-2 rounded-full bg-emerald-400 live-dot"></span>
+        </div>
+        <i id="termChevron" class="fa-solid fa-chevron-down text-slate-400 text-xs transition-transform duration-200"></i>
+      </button>
+      <div id="termCardBody" class="px-4 pb-4 flex gap-3 items-start">
+        <div id="tqr" class="w-20 h-20 shrink-0 bg-slate-50 rounded-lg border border-slate-200 overflow-hidden flex items-center justify-center"></div>
+        <div class="flex-1 min-w-0">
+          <p class="text-xs text-slate-400 mb-0.5">ID de esta terminal</p>
+          <code id="terminalIdEl" class="text-xs bg-slate-100 text-slate-700 px-2 py-0.5 rounded block font-mono mb-2 truncate"></code>
+          <p id="termStatusLine" class="text-xs text-slate-400 leading-relaxed">Escanea el QR con tu celular para usarlo como escáner inalámbrico.</p>
+          <div class="flex gap-3 mt-2">
+            <button onclick="copyScanLink()" class="py-2 text-xs text-indigo-600 hover:text-indigo-800 font-medium active:text-indigo-900">
+              <i class="fa-solid fa-copy mr-1"></i>Copiar enlace
+            </button>
+            <button onclick="forgetRemoteDevice()" class="py-2 text-xs text-slate-400 hover:text-red-500 font-medium">
+              <i class="fa-solid fa-link-slash mr-1"></i>Olvidar
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Pantalla para el cliente -->
+    <div id="displayCard" class="hidden bg-white rounded-xl border border-slate-200 shadow-sm">
+      <button onclick="toggleDisplayCard()" class="w-full flex items-center justify-between px-4 py-3">
+        <div class="flex items-center gap-2 text-sm font-semibold text-slate-700">
+          <i class="fa-solid fa-tv text-violet-500"></i>Pantalla para el cliente
+        </div>
+        <i id="displayChevron" class="fa-solid fa-chevron-down text-slate-400 text-xs transition-transform duration-200" ></i>
+      </button>
+      <div id="displayCardBody" class="px-4 pb-4 flex gap-3 items-start">
+        <div id="cqr" class="w-20 h-20 shrink-0 bg-slate-50 rounded-lg border border-slate-200 overflow-hidden flex items-center justify-center"></div>
+        <div class="flex-1 min-w-0">
+          <p class="text-xs text-slate-400 leading-relaxed">Abre este enlace en una tablet o segunda pantalla orientada al cliente: verá su carrito y total en tiempo real.</p>
+          <button onclick="copyDisplayLink()" class="mt-2 text-xs text-violet-600 hover:text-violet-800 font-medium active:text-violet-900">
+            <i class="fa-solid fa-copy mr-1"></i>Copiar enlace
+          </button>
+        </div>
+      </div>
+    </div>
+      </div>
       <div class="grid grid-cols-1 lg:grid-cols-2 gap-3 max-w-3xl">
         <div class="bg-white rounded-xl border border-slate-200 shadow-sm p-4">
           <p class="text-sm font-bold text-slate-700 mb-1"><i class="fa-solid fa-print text-indigo-500 mr-1.5"></i>Impresora de tickets</p>
@@ -1058,7 +1132,7 @@
         </div>
         <div class="bg-white rounded-xl border border-slate-200 shadow-sm p-4 lg:col-span-2">
           <p class="text-sm font-bold text-slate-700 mb-1"><i class="fa-solid fa-mobile-screen-button text-indigo-500 mr-1.5"></i>Celular como escáner remoto</p>
-          <p class="text-xs text-slate-400 mb-3">Ve al POS principal y abre la tarjeta "Escáner remoto (celular)" para obtener el código QR y vincular un teléfono. El estado de conexión se muestra en tiempo real (punto verde = conectado hace menos de 15s).</p>
+          <p class="text-xs text-slate-400 mb-3">Usa la tarjeta "Escáner remoto (celular)" de arriba para obtener el código QR y vincular un teléfono. El estado de conexión se muestra en tiempo real (punto verde = conectado hace menos de 15s).</p>
         </div>
       </div>
     </div>
@@ -1202,17 +1276,17 @@
     <!-- Method -->
     <div class="grid grid-cols-3 gap-2 mb-4">
       <button id="payBtnCash" onclick="selectPayMethod('cash')"
-        class="border-2 border-emerald-500 bg-emerald-50 text-emerald-700 py-2.5 rounded-xl font-semibold text-xs sm:text-sm min-h-[58px]">
+        class="relative border-2 border-emerald-500 bg-emerald-50 text-emerald-700 py-2.5 rounded-xl font-semibold text-xs sm:text-sm min-h-[58px]">
         <i class="fa-solid fa-money-bill-wave text-lg block mb-0.5"></i>Efectivo
-      </button>
+       <span class="kbd-key kbd-light ml-0.5">F4</span></button>
       <button id="payBtnCard" onclick="selectPayMethod('card')"
-        class="border-2 border-slate-200 bg-slate-50 text-slate-500 py-2.5 rounded-xl font-semibold text-xs sm:text-sm min-h-[58px]">
+        class="relative border-2 border-slate-200 bg-slate-50 text-slate-500 py-2.5 rounded-xl font-semibold text-xs sm:text-sm min-h-[58px]">
         <i class="fa-solid fa-credit-card text-lg block mb-0.5"></i>Tarjeta
-      </button>
+       <span class="kbd-key kbd-light ml-0.5">F2</span></button>
       <button id="payBtnMixed" onclick="selectPayMethod('mixed')"
-        class="border-2 border-slate-200 bg-slate-50 text-slate-500 py-2.5 rounded-xl font-semibold text-xs sm:text-sm min-h-[58px]">
+        class="relative border-2 border-slate-200 bg-slate-50 text-slate-500 py-2.5 rounded-xl font-semibold text-xs sm:text-sm min-h-[58px]">
         <i class="fa-solid fa-layer-group text-lg block mb-0.5"></i>Mixto
-      </button>
+       <span class="kbd-key kbd-light ml-0.5">F3</span></button>
     </div>
     <!-- Cash input -->
     <div id="cashArea" class="mb-4">
@@ -1989,6 +2063,6 @@
 <!-- ▌TICKET PARA IMPRIMIR ▐ — solo se ve al imprimir desde el navegador -->
 <div id="ticketPrint" aria-hidden="true"></div>
 
-<script src="app.js?v=20261010d"></script>
+<script src="app.js?v=20261010e"></script>
 </body>
 </html>

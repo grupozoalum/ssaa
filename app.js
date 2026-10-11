@@ -353,11 +353,9 @@ function renderQuickProducts(){
 function quickAdd(barcode){
   const p = S.products.find(x=>x.barcode===barcode);
   if(!p) return;
-  S.curProduct = p;
-  showProduct(p);
-  /* Granel necesita que el cajero escriba el peso: solo se muestra */
-  if(p.isBulk){ g('qtyInput').focus(); return; }
-  addToCart();
+  /* Granel necesita que el cajero escriba el peso: se muestra la tarjeta */
+  if(p.isBulk){ showProduct(p); g('qtyInput').focus(); return; }
+  agregarEscaneado(p);
 }
 
 /* ════════════════════════════════════
@@ -658,7 +656,7 @@ auth.onAuthStateChanged(async user => {
   const tag = g('modeTag');
   if(user){
     g('navLoginBtn').classList.add('hidden');
-    g('navUserArea').classList.remove('hidden');
+    g('navUserArea').classList.remove('hidden'); g('navUserArea').classList.add('flex');
     g('navUserName').textContent = user.displayName || user.email;
     g('shiftBtn').classList.remove('hidden'); g('shiftBtn').classList.add('flex');
     g('hwBtn').classList.remove('hidden');
@@ -813,7 +811,7 @@ const MAPA_MODULOS = {
   gastos     : ['tab-expenses','mtab-expenses'],
   turnos     : ['tab-shifts','mtab-shifts','shiftBtn'],
   sucursales : ['tab-branches','mtab-branches'],
-  recargas   : ['tab-recharges','mtab-recharges','rechargeCard'],
+  recargas   : ['tab-recharges','mtab-recharges','rechargeCard','rechargeBtnMobile'],
   hardware   : ['tab-hardware','mtab-hardware','hwBtn']
 };
 
@@ -945,8 +943,21 @@ async function gateSalir(){
 }
 
 function showCart(on){
-  // Solo mostramos la burbuja flotante (FAB) cuando está logueado
-  g('cartFab').classList.toggle('hidden', !on);
+  /* Con sesión: la venta actual siempre a la vista (lista + panel de cobro).
+     Sin sesión: pantalla de consulta de precios. */
+  on = !!on && !window._phoneMode;
+  document.body.classList.toggle('pos-selling', on);
+  ['ticketArea','ticketSide','ticketBar'].forEach(id => { const el=g(id); if(el) el.style.display = on ? '' : 'none'; });
+  const pc = g('posContent');
+  if(pc){
+    pc.classList.toggle('flex-1', !on);
+    pc.classList.toggle('shrink-0', on);
+    pc.classList.toggle('max-h-[45%]', on);
+  }
+  g('stateWelcome')?.classList.toggle('hidden', on);
+  g('cartFab').classList.add('hidden');      // la burbuja del carrito ya no se usa
+  g('rechargeBtnMobile')?.classList.toggle('hidden', !on);
+  if(on) renderCart();
   
   // Add to cart area
   g('addToCartArea').classList.toggle('hidden', !on);
@@ -1062,21 +1073,27 @@ document.addEventListener('click', e => { if(!e.target.closest('#searchWrapper')
 async function doSearch(queryOverride){
   const raw = (queryOverride || g('searchInput').value).trim();
   if(!raw) return;
+  /* El lector USB escribe en el buscador y además dispara su propio Enter:
+     el mismo código dos veces en un instante es UN solo escaneo. */
+  const ahora = Date.now();
+  if(raw === S._ultimaBusqueda && ahora - (S._ultimaBusquedaTs||0) < 250) return;
+  S._ultimaBusqueda = raw; S._ultimaBusquedaTs = ahora;
 
   hide('stateWelcome'); hide('stateProduct'); hide('stateNotFound'); hide('stateLoading');
-  show('stateLoading');
 
   /* If products not loaded yet, wait for snapshot */
   if(!S.products.length){
+    show('stateLoading');
     await new Promise(res=>setTimeout(res,800));
+    hide('stateLoading');
   }
 
-  hide('stateLoading');
   const q = raw.toLowerCase();
 
   /* 1. Exact barcode */
   const variantes = variantesCodigo(raw);
   let match = S.products.find(p => variantes.includes(p.barcode) && p.active !== false);
+  let exacto = !!match;   // código exacto = se agrega solo a la venta
 
   /* 2. Barcode partial / name includes (case-insensitive) */
   if(!match){
@@ -1090,13 +1107,39 @@ async function doSearch(queryOverride){
   if(!match){
     try{
       const doc = await db.collection('products').doc(raw).get();
-      if(doc.exists && doc.data().active !== false)
+      if(doc.exists && doc.data().active !== false){
         match = {barcode:doc.id,...doc.data()};
+        exacto = true;
+      }
     }catch(e){}
   }
 
-  if(match) showProduct(match);
-  else showNotFound(raw);
+  if(!match){ showNotFound(raw); return; }
+  /* Vendiendo: un código exacto entra directo a la venta.
+     Granel (pide peso) y búsquedas por nombre muestran la tarjeta para confirmar. */
+  if(modoVenta() && exacto && !match.isBulk) agregarEscaneado(match);
+  else {
+    showProduct(match);
+    /* Granel: el cursor va directo al peso; Enter lo agrega */
+    if(modoVenta() && match.isBulk) setTimeout(()=>{ const q=g('qtyInput'); q.focus(); q.select(); }, 50);
+  }
+}
+
+/* ¿Está la pantalla de venta activa? (con sesión, y no es el celular-escáner) */
+function modoVenta(){ return !!(S.isSeller || S.isAdmin) && !window._phoneMode; }
+
+/* Agrega 1 pieza del producto escaneado y lo resalta en la lista */
+function agregarEscaneado(p){
+  hide('stateProduct'); hide('stateNotFound'); hide('stateLoading');
+  if(!g('receiptModal').classList.contains('hidden')) hideReceiptModal();   // nueva venta tras cobrar
+  S.curProduct = p;
+  g('qtyInput').value = '1';
+  const antes = qtyInCart(p.barcode);
+  addToCart(true);
+  if(qtyInCart(p.barcode) > antes){ S.lastAdded = p.barcode; renderCart(); }
+  g('searchInput').value = '';
+  g('searchDropdown')?.classList.add('hidden');
+  if(!isMobile()) g('searchInput').focus();
 }
 
 window._bulkUnit = 'kg';
@@ -1138,8 +1181,8 @@ function showProduct(p){
   refreshProductStockUI();
   show('stateProduct'); hide('stateNotFound'); hide('stateWelcome'); hide('stateLoading');
   beep('scan');
-  /* El producto está hasta arriba: en celular regresamos el scroll para verlo */
-  if(isMobile()){ const pc=g('posContent'); if(pc && pc.scrollTop>40) pc.scrollTo({top:0, behavior:'smooth'}); }
+  /* El producto está hasta arriba: regresamos el scroll para verlo */
+  { const pc=g('posContent'); if(pc && pc.scrollTop>40) pc.scrollTo({top:0, behavior:'smooth'}); }
 }
 
 /* Insignia de existencias + botón "Agregar" según lo que queda disponible
@@ -1188,8 +1231,9 @@ function showNotFound(code){
 /* ════════════════════════════════════
    CART
 ════════════════════════════════════ */
-function addToCart(){
+function addToCart(silencioso){
   if(!S.curProduct) return;
+  silencioso = silencioso === true;
   
   const rawQty = g('qtyInput').value;
   if(S.curProduct.isBulk && !rawQty) {
@@ -1242,13 +1286,18 @@ function addToCart(){
     });
   }
   
+  S.lastAdded = p.barcode;
   renderCart();
-  showToast(p.name+' agregado ✓','success');
+  if(!silencioso && !modoVenta()) showToast(p.name+' agregado ✓','success');
   beep('add');
   g('qtyInput').value = p.isBulk ? '' : 1;
-  if(p.isBulk) g('qtyInput').focus();
   refreshProductStockUI();
-  const fab=g('cartFab'); fab.classList.remove('pulse-add'); void fab.offsetWidth; fab.classList.add('pulse-add');
+  /* Vendiendo: la tarjeta del producto se cierra, ya está en la lista */
+  if(modoVenta()){
+    hide('stateProduct');
+    g('searchInput').value = '';
+    if(!isMobile()) g('searchInput').focus();
+  } else if(p.isBulk) g('qtyInput').focus();
 }
 function removeCartItem(b){ S.cart=S.cart.filter(i=>i.barcode!==b); renderCart(); refreshProductStockUI(); }
 function changeCartQty(b,d){
@@ -1319,10 +1368,72 @@ function cartTotals(){
   return {subtotal, discountAmt, total: subtotal-discountAmt};
 }
 
+/* Renglón de la venta actual.
+   Celular: nombre arriba; abajo cantidad (− +) e importe.
+   Computadora: Producto | Cantidad | Precio | Importe | quitar */
+function ticketRowHTML(it){
+  const bc = esc(it.barcode);
+  const qty = it.isBulk ? `${round3(it.quantity)} kg` : `${it.quantity}`;
+  const stepper = (it.isRecharge || it.isBulk)
+    ? `<span class="text-sm font-bold text-slate-700 num lg:text-center lg:block">${qty}</span>`
+    : `<div class="flex items-center gap-1.5 lg:justify-center">
+         <button onclick="changeCartQty('${bc}',-1)" aria-label="Menos" class="w-9 h-9 lg:w-8 lg:h-8 rounded-full bg-slate-100 hover:bg-slate-200 active:bg-slate-300 text-slate-700 font-bold text-lg leading-none flex items-center justify-center">−</button>
+         <span class="min-w-[2rem] text-center text-base lg:text-sm font-black text-slate-800 num">${qty}</span>
+         <button onclick="changeCartQty('${bc}',1)" aria-label="Más" class="w-9 h-9 lg:w-8 lg:h-8 rounded-full bg-slate-100 hover:bg-slate-200 active:bg-slate-300 text-slate-700 font-bold text-lg leading-none flex items-center justify-center">+</button>
+       </div>`;
+  return `<div class="tk-row grid grid-cols-[minmax(0,1fr)_auto] lg:grid-cols-[minmax(0,1fr)_132px_92px_108px_44px] items-center gap-x-3 gap-y-1.5 px-3 lg:px-4 py-2.5 border-b border-slate-100" data-bc="${bc}">
+    <div class="min-w-0">
+      <p class="text-[15px] lg:text-sm font-semibold text-slate-800 leading-snug break-anywhere">${esc(it.name)}</p>
+      <p class="text-xs text-slate-400 mt-0.5 lg:hidden num">${fmt(it.price)}${it.isBulk?' / kg':' c/u'}</p>
+      <p class="text-[11px] text-slate-400 mt-0.5 hidden lg:block font-mono truncate">${it.isRecharge?'Recarga':bc}</p>
+    </div>
+    <button onclick="removeCartItem('${bc}')" aria-label="Quitar" class="lg:order-last justify-self-end w-9 h-9 rounded-lg text-slate-300 hover:text-red-500 hover:bg-red-50 active:bg-red-100 flex items-center justify-center"><i class="fa-solid fa-xmark"></i></button>
+    ${stepper}
+    <p class="hidden lg:block text-right text-sm text-slate-500 num">${fmt(it.price)}</p>
+    <p class="text-right text-lg lg:text-sm font-black text-slate-900 num">${fmt(it.subtotal)}</p>
+  </div>`;
+}
+const TICKET_EMPTY = `<div class="h-full min-h-[220px] flex flex-col items-center justify-center text-center px-6 py-10">
+  <div class="w-16 h-16 rounded-2xl bg-indigo-50 text-indigo-400 flex items-center justify-center text-3xl mb-3"><i class="fa-solid fa-barcode"></i></div>
+  <p class="font-bold text-slate-600">Escanea un producto</p>
+  <p class="text-sm text-slate-400 mt-1 max-w-xs">Se agrega solo a la venta. También puedes escribir el nombre en el buscador.</p>
+  <p class="hidden lg:flex flex-wrap justify-center gap-x-3 gap-y-1 mt-5 text-xs text-slate-400">
+    <span><kbd class="kbd-key kbd-light">F4</kbd> Efectivo</span><span><kbd class="kbd-key kbd-light">F2</kbd> Tarjeta</span>
+    <span><kbd class="kbd-key kbd-light">F3</kbd> Mixto</span><span><kbd class="kbd-key kbd-light">F1</kbd> Buscar</span><span><kbd class="kbd-key kbd-light">F8</kbd> Vaciar</span>
+  </p>
+</div>`;
+
+function renderTicket(subtotal, discountAmt, total, count){
+  const list = g('ticketList'); if(!list) return;
+  const n = round3(count);
+  const art = `${n} artículo${n===1?'':'s'}`;
+  list.innerHTML = S.cart.length ? S.cart.map(ticketRowHTML).join('') : TICKET_EMPTY;
+  g('ticketCount').textContent = S.cart.length ? '· ' + art : '';
+  g('sideCount').textContent = n;
+  g('sideSub').textContent = fmt(subtotal);
+  g('sideTotal').textContent = fmt(total);
+  g('sideDiscRow').classList.toggle('hidden', !discountAmt);
+  g('sideDiscRow').classList.toggle('flex', !!discountAmt);
+  if(discountAmt) g('sideDisc').textContent = '-' + fmt(discountAmt);
+  g('barCount').textContent = S.cart.length ? art + (discountAmt ? ' · con descuento' : '') : 'Sin productos';
+  g('barTotal').textContent = fmt(total);
+  ['btnPayCash','btnPayCard','btnPayMixed','payBubble'].forEach(id => { const b=g(id); if(b) b.disabled = !S.cart.length; });
+  /* Resalta lo último que entró y lo deja a la vista */
+  if(S.lastAdded){
+    const row = list.querySelector(`[data-bc="${CSS.escape(S.lastAdded)}"]`);
+    if(row){
+      row.classList.add('tk-flash');
+      row.scrollIntoView({block:'nearest'});
+    }
+    S.lastAdded = null;
+  }
+}
+
 function renderCart(){
   if(!S.cart.length) S.discount=null;
   const {subtotal, discountAmt, total} = cartTotals();
   const count = S.cart.reduce((s,i)=>s+i.quantity,0);
+  renderTicket(subtotal, discountAmt, total, count);
   const html  = S.cart.length ? S.cart.map(cartItemHTML).join('') : '<p class="text-slate-300 text-xs text-center py-6"><i class="fa-solid fa-cart-shopping block text-2xl mb-2"></i>Carrito vacío</p>';
 
   /* Desktop */
@@ -1363,6 +1474,8 @@ function renderCart(){
 
 /* Toggle cart drawer/sheet for Mobile & PC */
 function openMobileCart(){
+  /* El carrito ya está siempre a la vista en la pantalla de venta */
+  if(document.body.classList.contains('pos-selling')){ g('ticketList')?.scrollTo({top:0, behavior:'smooth'}); return; }
   g('cartFab').classList.add('hidden'); // <-- Oculta la burbuja flotante
   g('cartBackdrop').classList.remove('hidden');
   
@@ -1453,7 +1566,7 @@ function closeNavMore(){
    3) Si aun así no cuadra, el archivo del servidor ES viejo: se avisa
       cuál hay que volver a subir.
 ════════════════════════════════════════════════════════════════ */
-const POS_BUILD = '20261010d';
+const POS_BUILD = '20261010e';
 function verificarVersionArchivos(intento = 0){
   const meta = (document.querySelector('meta[name="pos-build"]')||{}).content || '';
   const css  = getComputedStyle(document.documentElement).getPropertyValue('--pos-css').replace(/["'\s]/g,'');
@@ -1481,19 +1594,63 @@ function verificarVersionArchivos(intento = 0){
     location.replace(u.toString());
     return;
   }
-  /* 3) El servidor tiene un archivo viejo: avisar cuál */
-  const cual = meta !== POS_BUILD ? 'index.html' : 'styles.css';
+  /* 3) Algo sigue sin cuadrar: diagnosticar qué tiene el servidor y decirlo claro */
+  diagnosticarArchivos(meta, css);
+}
+
+async function diagnosticarArchivos(meta, cssCargado){
+  const leer = async url => {
+    try{
+      const r = await fetch(url + (url.includes('?')?'&':'?') + 'diag=' + Date.now(), {cache:'no-store'});
+      const texto = r.ok ? await r.text() : '';
+      return {ok:r.ok, status:r.status, tipo:(r.headers.get('content-type')||'').toLowerCase(), texto};
+    }catch(e){ return {ok:false, status:0, tipo:'', texto:'', error:e.message}; }
+  };
+  let titulo, detalle;
+  if(meta !== POS_BUILD){
+    const h = await leer('index.html');
+    const v = (h.texto.match(/name="pos-build" content="([^"]+)"/)||[])[1];
+    if(v === POS_BUILD){ location.reload(); return; }   // el servidor ya lo tiene: solo era caché
+    titulo  = 'Tu servidor tiene un <b>index.html</b> ' + (v ? 'de la versión ' + v : 'anterior') + '.';
+    detalle = 'Este app.js es la versión ' + POS_BUILD + '. Sube el index.html nuevo.';
+  } else {
+    const c = await leer('styles.css');
+    const v = (c.texto.match(/--pos-css:\s*["']([^"']+)["']/)||[])[1];
+    if(c.ok && v === POS_BUILD && /css/.test(c.tipo)){
+      /* El servidor SÍ tiene el archivo correcto; el navegador o el hosting
+         siguen dando el viejo. Lo aplicamos directo y listo, sin avisar. */
+      const st = document.createElement('style');
+      st.id = 'posCssFresco'; st.textContent = c.texto;
+      document.head.appendChild(st);
+      console.info('POS: styles.css aplicado sin caché');
+      return;
+    }
+    if(!c.ok && (c.status === 404 || c.status === 403)){
+      titulo  = 'No se encontró <b>styles.css</b> en tu servidor (error ' + c.status + ').';
+      detalle = 'Súbelo en la <b>misma carpeta</b> que index.html y app.js, con el nombre exacto <b>styles.css</b>.';
+    } else if(!c.ok){
+      titulo  = 'No se pudo leer <b>styles.css</b> del servidor' + (c.status ? ' (error ' + c.status + ')' : '') + '.';
+      detalle = 'Revisa tu conexión y vuelve a abrir el POS.';
+    } else if(c.ok && !/css/.test(c.tipo)){
+      titulo  = 'Tu servidor manda <b>styles.css</b> como «' + (c.tipo||'sin tipo') + '» y el navegador lo ignora.';
+      detalle = 'Debe enviarse como <b>text/css</b>. Revisa en tu hosting que el archivo termine en .css.';
+    } else {
+      titulo  = 'Tu servidor tiene un <b>styles.css</b> ' + (v ? 'de la versión <b>' + v + '</b>' : 'anterior') + ', y el POS necesita la <b>' + POS_BUILD + '</b>.';
+      detalle = 'Seguramente el archivo nuevo no reemplazó al viejo. Ojo: al descargar varias veces, la computadora lo guarda como <b>styles (1).css</b>; '
+              + 'cámbiale el nombre a <b>styles.css</b> antes de subirlo.';
+    }
+  }
   const aviso = document.createElement('div');
   aviso.setAttribute('role','alert');
   aviso.style.cssText = 'position:fixed;left:12px;right:12px;bottom:calc(12px + env(safe-area-inset-bottom));z-index:9999;'
-    + 'background:#7f1d1d;color:#fff;padding:14px 16px;border-radius:14px;font:600 14px/1.4 system-ui,sans-serif;'
-    + 'box-shadow:0 10px 30px rgba(0,0,0,.35);max-width:560px;margin:0 auto';
-  aviso.innerHTML = '⚠️ El archivo <b>' + cual + '</b> de tu servidor es de una versión anterior, por eso el POS puede verse mal. '
-    + 'Vuelve a subir <b>index.html, styles.css y app.js</b> juntos, en la misma carpeta.'
-    + '<button style="display:block;margin-top:8px;background:#fff;color:#7f1d1d;border:0;border-radius:10px;padding:8px 14px;font-weight:800">Entendido</button>';
+    + 'background:#7f1d1d;color:#fff;padding:14px 16px;border-radius:14px;font:500 14px/1.45 system-ui,sans-serif;'
+    + 'box-shadow:0 10px 30px rgba(0,0,0,.35);max-width:600px;margin:0 auto';
+  aviso.innerHTML = '<div style="font-weight:700;margin-bottom:4px">⚠️ ' + titulo + '</div><div style="opacity:.92">' + detalle + '</div>'
+    + '<div style="opacity:.6;font-size:11px;margin-top:6px">html ' + (meta||'—') + ' · css ' + (cssCargado||'—') + ' · js ' + POS_BUILD + '</div>'
+    + '<button style="display:block;margin-top:10px;background:#fff;color:#7f1d1d;border:0;border-radius:10px;padding:8px 14px;font-weight:800">Entendido</button>';
   aviso.querySelector('button').onclick = () => aviso.remove();
   document.body.appendChild(aviso);
-  console.warn('POS: versión distinta → html', meta, '· css', css, '· js', POS_BUILD);
+  console.warn('POS: versión distinta → html', meta, '· css', cssCargado, '· js', POS_BUILD);
 }
 /* Se revisa cuando ya cargaron las hojas de estilo */
 if(document.readyState === 'complete') setTimeout(verificarVersionArchivos, 0);
@@ -1568,12 +1725,6 @@ queueMicrotask(function mobileBoost(){
     head.addEventListener('touchend', fin); head.addEventListener('touchcancel', fin);
   }
 
-  /* En el celular, la tarjeta de "escáner remoto" empieza cerrada:
-     el celular ya ES el escáner, y así el producto queda a la vista. */
-  if(innerWidth < 640){
-    const body = g('termCardBody');
-    if(body && !body.classList.contains('hidden')) toggleTermCard();
-  }
   /* Cierra el menú ⋮ al girar o cambiar de tamaño */
   addEventListener('resize', closeNavMore);
 });
@@ -2337,7 +2488,7 @@ function getParkedSales(){ try{ return JSON.parse(localStorage.getItem(PARK_KEY)
 function setParkedSales(list){ localStorage.setItem(PARK_KEY, JSON.stringify(list)); refreshParkBadges(); }
 function refreshParkBadges(){
   const n = getParkedSales().length;
-  ['parkCountMobile','parkCountDesktop'].forEach(id=>{
+  ['parkCountMobile','parkCountDesktop','parkCountTicket','parkCountSide'].forEach(id=>{
     const el=g(id); if(!el) return;
     if(n>0){ el.textContent=n; el.classList.remove('hidden'); } else el.classList.add('hidden');
   });
@@ -2528,8 +2679,21 @@ function showCdThankYou(total){
 /* ════════════════════════════════════
    PAYMENT
 ════════════════════════════════════ */
-async function showPaymentModal(){
+/* Cobrar con un método ya elegido (botones del panel, burbuja y F2/F3/F4) */
+async function cobrar(metodo='cash'){
+  if(!S.cart.length){ showToast('Escanea al menos un producto para cobrar','warning'); beep('error'); return; }
+  if(!g('payModal').classList.contains('hidden')){ selectPayMethod(metodo); enfocarCobro(metodo); return; }
+  await showPaymentModal(metodo);
+}
+function enfocarCobro(metodo){
+  setTimeout(()=>{
+    const el = metodo==='cash' ? g('cashInput') : metodo==='mixed' ? g('mixedCashInput') : g('processBtn');
+    el?.focus(); if(el && el.select) try{ el.select(); }catch(e){}
+  }, 120);
+}
+async function showPaymentModal(metodo){
   if(!S.cart.length) return;
+  metodo = ['cash','card','mixed'].includes(metodo) ? metodo : 'cash';
   /* Antes de cobrar: ¿todavía hay de todo lo que lleva el carrito? */
   if(!(await ensureCartStock())) return;
   if(!S.cart.length) return;
@@ -2543,15 +2707,27 @@ async function showPaymentModal(){
   g('payTotal').textContent = fmt(total);
   g('cashInput').value=''; g('changeDisplay').textContent='$0.00';
   g('mixedCashInput').value=''; g('mixedCardInput').value=''; g('mixedStatus').textContent='';
-  S.payMethod='cash'; selectPayMethod('cash');
+  S.payMethod=metodo; selectPayMethod(metodo);
   /* Quick amounts buttons */
   const quicks=[total,Math.ceil(total/10)*10,Math.ceil(total/50)*50,Math.ceil(total/100)*100];
   const uniq=[...new Set(quicks)].filter(v=>v>=total).slice(0,4);
   g('quickAmounts').innerHTML=uniq.map(v=>`<button onclick="setQuick(${v})" class="flex-1 bg-slate-100 hover:bg-slate-200 active:bg-slate-300 text-slate-700 text-xs font-bold py-2 rounded-lg min-h-[36px]">${fmt(v)}</button>`).join('');
   closeMobileCart();
   g('payModal').classList.remove('hidden');
-  setTimeout(()=>g('cashInput').focus(),200);
+  enfocarCobro(metodo);
 }
+/* Enter confirma el cobro. En efectivo, Enter con el monto vacío = pagó exacto. */
+document.addEventListener('keydown', e=>{
+  if(e.key!=='Enter' || g('payModal').classList.contains('hidden')) return;
+  if(e.target && e.target.tagName==='BUTTON') return;      // el botón enfocado ya hace su clic
+  if(g('processBtn').disabled) return;
+  e.preventDefault();
+  if(S.payMethod==='cash' && !g('cashInput').value){
+    const {grandTotal} = recalcTotalConComision();
+    g('cashInput').value = Math.round(grandTotal*100)/100; calcChange();
+  }
+  processPayment();
+});
 function hidePayModal(){ g('payModal').classList.add('hidden'); }
 function setQuick(v){ g('cashInput').value=v; calcChange(); }
 
@@ -4846,12 +5022,25 @@ document.addEventListener('keydown',e=>{
     if(!g('confirmModal').classList.contains('hidden')) _confirmResolve(false);
     closeMobileCart();
   }
-  /* Cashier speed shortcuts (only meaningful while logged in, not while typing in an input) */
-  const typing = ['INPUT','TEXTAREA','SELECT'].includes(document.activeElement?.tagName);
-  if((S.isSeller||S.isAdmin) && !typing){
-    if(e.key==='F2'){ e.preventDefault(); g('searchInput')?.focus(); }
-    if(e.key==='F4'){ e.preventDefault(); if(S.cart.length) showPaymentModal(); }
-    if(e.key==='F8'){ e.preventDefault(); clearCart(); }
+  /* Atajos de caja: F4 efectivo · F2 tarjeta · F3 mixto · F1 buscar · F8 vaciar.
+     Funcionan aunque el cursor esté en el buscador (las F no escriben nada). */
+  /* Vendiendo, si escribes sin tener nada enfocado, va directo al buscador */
+  if(modoVenta() && e.key.length===1 && !e.ctrlKey && !e.metaKey && !e.altKey
+     && (document.activeElement===document.body || !document.activeElement)
+     && g('adminPanel').classList.contains('hidden')
+     && ![...document.querySelectorAll('[id$="Modal"]')].some(m=>!m.classList.contains('hidden'))){
+    g('searchInput').focus();
+  }
+  if(modoVenta() && /^F[1-8]$/.test(e.key)){
+    const adminAbierto = !g('adminPanel').classList.contains('hidden');
+    /* ¿Hay otra ventana abierta (producto, descuento, turno…)? Entonces no */
+    const otraVentana = [...document.querySelectorAll('[id$="Modal"]')]
+      .some(m => !m.classList.contains('hidden') && m.id!=='payModal' && m.id!=='receiptModal');
+    if(adminAbierto || otraVentana) return;
+    const metodo = {F4:'cash', F2:'card', F3:'mixed'}[e.key];
+    if(metodo){ e.preventDefault(); if(!g('receiptModal').classList.contains('hidden')) hideReceiptModal(); cobrar(metodo); return; }
+    if(e.key==='F1'){ e.preventDefault(); hidePayModal(); const si=g('searchInput'); si.focus(); si.select(); return; }
+    if(e.key==='F8'){ e.preventDefault(); if(g('payModal').classList.contains('hidden')) clearCart(); return; }
   }
 });
 
