@@ -8,7 +8,7 @@
   <meta name="apple-mobile-web-app-title" content="POS"/>
   <meta name="application-name" content="POS"/>
   <!-- Versión: app.js comprueba que styles.css y app.js sean de esta misma versión -->
-  <meta name="pos-build" content="20261010e"/>
+  <meta name="pos-build" content="20261010g"/>
   <meta name="mobile-web-app-capable" content="yes"/>
   <meta name="apple-mobile-web-app-capable" content="yes"/>
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent"/>
@@ -22,7 +22,7 @@
   <script src="https://www.gstatic.com/firebasejs/10.7.1/firebase-app-compat.js"></script>
   <script src="https://www.gstatic.com/firebasejs/10.7.1/firebase-auth-compat.js"></script>
   <script src="https://www.gstatic.com/firebasejs/10.7.1/firebase-firestore-compat.js"></script>
-  <link rel="stylesheet" href="styles.css?v=20261010e"/>
+  <link rel="stylesheet" href="styles.css?v=20261010g"/>
 </head>
 <body class="bg-slate-100 overflow-hidden">
 
@@ -166,6 +166,11 @@
             <p class="text-indigo-100 text-xs mt-2 font-semibold">Escaneados en esta sesión: <span id="phoneScanCount">0</span></p>
           </div>
           <i class="fa-solid fa-wifi text-3xl text-indigo-300 shrink-0"></i>
+        </div>
+        <p class="text-indigo-200 text-xs mt-3 leading-snug">Este celular solo manda los códigos a la computadora; <b class="text-white">ahí se cobra</b>.</p>
+        <div class="grid grid-cols-2 gap-2 mt-3">
+          <button onclick="openScanModal()" class="bg-white text-indigo-700 font-bold text-sm rounded-xl min-h-[44px] flex items-center justify-center gap-2"><i class="fa-solid fa-camera"></i>Escanear</button>
+          <button onclick="salirModoEscaner()" class="bg-indigo-800/60 text-white font-bold text-sm rounded-xl min-h-[44px] flex items-center justify-center gap-2 border border-white/20"><i class="fa-solid fa-cash-register"></i>Cobrar aquí</button>
         </div>
       </div>
 
@@ -2063,6 +2068,6 @@
 <!-- ▌TICKET PARA IMPRIMIR ▐ — solo se ve al imprimir desde el navegador -->
 <div id="ticketPrint" aria-hidden="true"></div>
 
-<script src="app.js?v=20261010e"></script>
+<script src="app.js?v=20261010g"></script>
 </body>
 </html>

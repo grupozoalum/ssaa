@@ -200,10 +200,22 @@ let _cdPushTimer=null; // throttle for customer-display cart push
 ════════════════════════════════════ */
 function subscribeProducts(){
   if(S.prodUnsub) return;
+  S.prodError = null;
   S.prodUnsub = db.collection('products').onSnapshot(snap => {
+    S.prodError = null;
+    S.productsLoaded = true;
     setServerProducts(snap.docs.map(d=>({barcode:d.id,...d.data()})));
-  }, err => console.warn('Products snapshot error:', err));
+  }, err => {
+    console.warn('Products snapshot error:', err);
+    S.prodError = err.code || err.message || 'error';
+    S.prodUnsub = null;
+    /* Mala señal u otro tropiezo: se reintenta solo. Sin permiso no tiene caso. */
+    if(S.prodError !== 'permission-denied') setTimeout(() => { if(TENANT) subscribeProducts(); }, 5000);
+  });
 }
+
+/* Texto sin acentos ni mayúsculas: "Jalapeño" → "jalapeno" */
+const sinAcentos = t => String(t||'').normalize('NFD').replace(/[\u0300-\u036f]/g,'').toLowerCase();
 
 /* ════════════════════════════════════
    EXISTENCIAS
@@ -790,7 +802,12 @@ function soltarNegocio(){
   [S.prodUnsub,S.branchUnsub,S.carrierUnsub,S.termUnsub].forEach(u=>{ try{ u && u(); }catch(e){} });
   S.prodUnsub=S.branchUnsub=S.carrierUnsub=S.termUnsub=null;
   S.products=[]; S.productsRaw=[]; S.branches=[]; S.rechargeCarriers=[]; S.allSellers=[];
+  S.productsLoaded=false; S.prodError=null;
   TENANT=null; PERFIL=null; NEGOCIO=null; MOD={};
+  /* Si entra otro usuario en este mismo dispositivo, hay que volver a pedir
+     productos, sucursales y recargas (antes se quedaba sin productos). */
+  _datosArrancados = false;
+  try{ localStorage.removeItem(PRODCACHE_KEY); }catch(e){}
 }
 
 let _datosArrancados = false;
@@ -1022,10 +1039,13 @@ async function doLogin(){
   } finally { btn.disabled=false; btn.innerHTML='<i class="fa-solid fa-sign-in-alt mr-1.5"></i>Entrar'; }
 }
 async function logout(){
-  await auth.signOut(); 
-  S.cart=[]; S.discount=null; renderCart(); // Vaciar carrito silenciosamente al salir
-  closeMobileCart();
-  showToast('Sesión cerrada','info');
+  S.cart=[]; S.discount=null;
+  try{ localStorage.removeItem('posActiveCart_v1'); }catch(e){}
+  _datosArrancados = false;
+  await auth.signOut();
+  /* Se recarga en limpio: así el siguiente usuario (vendedor o dueño)
+     carga SUS productos, sucursales y turno desde cero. */
+  location.reload();
 }
 
 /* ── Persistencia del carrito actual ── */
@@ -1052,8 +1072,8 @@ function restoreLocalCart() {
 function handleSearchInput(q) {
   const dd = g('searchDropdown');
   if(!q) { dd.classList.add('hidden'); return; }
-  q = q.toLowerCase();
-  const matches = S.products.filter(p => p.active !== false && (p.name.toLowerCase().includes(q) || p.barcode.toLowerCase().includes(q))).slice(0, 8);
+  q = sinAcentos(q);
+  const matches = S.products.filter(p => p.active !== false && (sinAcentos(p.name).includes(q) || sinAcentos(p.barcode).includes(q))).slice(0, 8);
   if(!matches.length) { dd.classList.add('hidden'); return; }
   dd.innerHTML = matches.map(p => `
     <div onclick="selectFromDropdown('${esc(p.barcode)}')" class="p-3 hover:bg-slate-50 cursor-pointer flex justify-between items-center transition">
@@ -1073,6 +1093,7 @@ document.addEventListener('click', e => { if(!e.target.closest('#searchWrapper')
 async function doSearch(queryOverride){
   const raw = (queryOverride || g('searchInput').value).trim();
   if(!raw) return;
+  g('searchDropdown')?.classList.add('hidden');
   /* El lector USB escribe en el buscador y además dispara su propio Enter:
      el mismo código dos veces en un instante es UN solo escaneo. */
   const ahora = Date.now();
@@ -1095,11 +1116,12 @@ async function doSearch(queryOverride){
   let match = S.products.find(p => variantes.includes(p.barcode) && p.active !== false);
   let exacto = !!match;   // código exacto = se agrega solo a la venta
 
-  /* 2. Barcode partial / name includes (case-insensitive) */
+  /* 2. Barcode partial / name includes (sin importar mayúsculas ni acentos) */
   if(!match){
+    const qn = sinAcentos(q);
     match = S.products.find(p => p.active !== false && (
-      p.barcode?.toLowerCase() === q ||
-      p.name?.toLowerCase().includes(q)
+      sinAcentos(p.barcode) === qn ||
+      sinAcentos(p.name).includes(qn)
     ));
   }
 
@@ -1115,6 +1137,14 @@ async function doSearch(queryOverride){
   }
 
   if(!match){ showNotFound(raw); return; }
+  /* Celular en modo escáner: el código va a la computadora de la caja */
+  if(window._phoneMode && window._targetTerminal && exacto && !S._yaEnviado){
+    pushToTerminal(match.barcode, window._targetTerminal).then(()=>{
+      window._phoneScanCount = (window._phoneScanCount||0) + 1;
+      g('phoneScanCount').textContent = window._phoneScanCount;
+      showToast('✅ Enviado a la caja: '+match.name,'success');
+    }).catch(()=>showToast('No se pudo enviar a la caja. Revisa el internet.','error'));
+  }
   /* Vendiendo: un código exacto entra directo a la venta.
      Granel (pide peso) y búsquedas por nombre muestran la tarjeta para confirmar. */
   if(modoVenta() && exacto && !match.isBulk) agregarEscaneado(match);
@@ -1215,6 +1245,18 @@ function refreshProductStockUI(){
 function showNotFound(code){
   g('notFoundCode').textContent = 'Código: '+code;
   hide('notFoundCatalog');
+  /* ¿De verdad no existe, o es que este dispositivo no tiene los productos? */
+  const sinCatalogo = !S.products.length && !!S.user;
+  const titulo = g('stateNotFound').querySelector('p.font-bold');
+  if(titulo) titulo.textContent = sinCatalogo ? 'Los productos no han cargado' : 'Producto no encontrado';
+  if(sinCatalogo){
+    g('notFoundCode').innerHTML = S.prodError === 'permission-denied'
+      ? 'Tu usuario no tiene permiso para leer los productos. Revisa las reglas de Firebase para los vendedores.'
+      : S.prodError
+        ? 'No se pudieron descargar (' + esc(S.prodError) + '). Se reintenta solo; revisa el internet.'
+        : 'Todavía se están descargando. Espera unos segundos y vuelve a intentar.';
+    if(S.prodError && S.prodError !== 'permission-denied' && TENANT) subscribeProducts();
+  }
   buscarEnCatalogo(code).then(ficha=>{
     if(!ficha || g('notFoundCode').textContent !== 'Código: '+code) return;
     const det = detalleCatalogo(ficha);
@@ -1566,7 +1608,7 @@ function closeNavMore(){
    3) Si aun así no cuadra, el archivo del servidor ES viejo: se avisa
       cuál hay que volver a subir.
 ════════════════════════════════════════════════════════════════ */
-const POS_BUILD = '20261010e';
+const POS_BUILD = '20261010g';
 function verificarVersionArchivos(intento = 0){
   const meta = (document.querySelector('meta[name="pos-build"]')||{}).content || '';
   const css  = getComputedStyle(document.documentElement).getPropertyValue('--pos-css').replace(/["'\s]/g,'');
@@ -1738,10 +1780,8 @@ async function openScanModal(){
   startSc('scanReader','scanInst', async code => {
     await closeScanModal();
     g('searchInput').value = code;
+    /* En modo escáner, doSearch se encarga de mandarlo a la caja */
     await doSearch(code);
-    /* Phone mode: also push to terminal */
-    if(window._phoneMode && window._targetTerminal)
-      await pushToTerminal(code, window._targetTerminal);
   });
 }
 async function closeScanModal(){
@@ -2412,11 +2452,19 @@ function toggleTermCard(){
   body.classList.toggle('hidden',open);
   ch.style.transform=open?'rotate(-90deg)':'rotate(0deg)';
 }
+/* El celular deja de ser escáner y se vuelve una caja normal (lista + cobro) */
+function salirModoEscaner(){
+  const u = new URL(location.href);
+  u.searchParams.delete('scan');
+  location.replace(u.toString());
+}
 function checkPhoneMode(){
   const target=new URLSearchParams(location.search).get('scan');
   if(!target) return;
   window._phoneMode=true; window._targetTerminal=target;
   window._phoneScanCount=0;
+  /* Modo escáner: sin lista de venta ni cobro en este celular */
+  if(document.body.classList.contains('pos-selling')) showCart(false);
   show('phoneBanner'); g('phoneTargetId').textContent=target;
   g('terminalCard').classList.add('hidden'); hide('stateWelcome');
   reportDevicePresence(target);
@@ -2434,7 +2482,7 @@ function checkPhoneMode(){
       if(navigator.vibrate) navigator.vibrate(60);
       showToast('✅ Enviado: '+code,'success');
       beep('scan');
-      doSearch(code);
+      S._yaEnviado = true; doSearch(code).finally(()=>{ S._yaEnviado = false; });
     });
   });
 }
