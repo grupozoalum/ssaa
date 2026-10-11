@@ -128,12 +128,13 @@ let TENANT = null;    // id del negocio
 let PERFIL = null;    // negocios/{TENANT}/users/{uid} — vive DENTRO del negocio
 let NEGOCIO = null;   // documento del negocio
 let MOD = {};         // modulos que el admin god le activo
+let PERFIL_REF = null; // referencia al documento del usuario (para escuchar su horario en vivo)
 
 /* Colecciones que viven dentro de cada negocio */
 const COLS_DEL_NEGOCIO = new Set([
   'products','sales','users','shifts','expenses',
   'terminals','branches','rechargeCarriers','inventoryEntries',
-  'customers','counters','contratos'
+  'customers','counters','contratos','accessRequests'
 ]);
 
 const db = {
@@ -703,6 +704,7 @@ auth.onAuthStateChanged(async user => {
   aplicarModulos();
   aplicarBranding();
   if(!S.isAdmin) closeAdmin();
+  if(user) iniciarHorarios();
 });
 
 /* ════════════════════════════════════════════════════════
@@ -745,6 +747,7 @@ async function resolverNegocio(user){
     }
 
     const ficha = candidatas[0];
+    PERFIL_REF = ficha.ref;
     /* users está dentro de negocios/{tenantId}: de ahí sale el identificador. */
     TENANT = ficha.ref.parent.parent.id;
     PERFIL = { uid:user.uid, ...ficha.data() };
@@ -803,7 +806,10 @@ function soltarNegocio(){
   S.prodUnsub=S.branchUnsub=S.carrierUnsub=S.termUnsub=null;
   S.products=[]; S.productsRaw=[]; S.branches=[]; S.rechargeCarriers=[]; S.allSellers=[];
   S.productsLoaded=false; S.prodError=null;
-  TENANT=null; PERFIL=null; NEGOCIO=null; MOD={};
+  [S.perfilUnsub,S.reqUnsub,S.reqAdminUnsub].forEach(u=>{ try{ u && u(); }catch(e){} });
+  S.perfilUnsub=S.reqUnsub=S.reqAdminUnsub=null; S.acceso=null; S.solicitudes=[];
+  g('reqPill')?.classList.add('hidden');
+  TENANT=null; PERFIL=null; PERFIL_REF=null; NEGOCIO=null; MOD={};
   /* Si entra otro usuario en este mismo dispositivo, hay que volver a pedir
      productos, sucursales y recargas (antes se quedaba sin productos). */
   _datosArrancados = false;
@@ -1608,7 +1614,7 @@ function closeNavMore(){
    3) Si aun así no cuadra, el archivo del servidor ES viejo: se avisa
       cuál hay que volver a subir.
 ════════════════════════════════════════════════════════════════ */
-const POS_BUILD = '20261010g';
+const POS_BUILD = '20261010h';
 function verificarVersionArchivos(intento = 0){
   const meta = (document.querySelector('meta[name="pos-build"]')||{}).content || '';
   const css  = getComputedStyle(document.documentElement).getPropertyValue('--pos-css').replace(/["'\s]/g,'');
@@ -2730,6 +2736,11 @@ function showCdThankYou(total){
 /* Cobrar con un método ya elegido (botones del panel, burbuja y F2/F3/F4) */
 async function cobrar(metodo='cash'){
   if(!S.cart.length){ showToast('Escanea al menos un producto para cobrar','warning'); beep('error'); return; }
+  /* ¿Está en su horario (o tiene permiso)? */
+  const st = estadoCobro();
+  if(!st.ok){ hidePayModal(); mostrarBloqueo(st.motivo); return; }
+  /* ¿Ya contó el dinero de la caja? */
+  if(requiereConteo()){ S._cobroPendiente = metodo; hidePayModal(); openShiftModal({forzado:true}); return; }
   if(!g('payModal').classList.contains('hidden')){ selectPayMethod(metodo); enfocarCobro(metodo); return; }
   await showPaymentModal(metodo);
 }
@@ -2831,6 +2842,9 @@ function calcMixed(){
 
 async function processPayment(){
   if(!S.user){ showToast('Debes iniciar sesión para cobrar','error'); return; }
+  { const st = estadoCobro();
+    if(!st.ok){ hidePayModal(); mostrarBloqueo(st.motivo); return; }
+    if(requiereConteo()){ hidePayModal(); openShiftModal({forzado:true}); return; } }
   /* Segunda revisión justo al confirmar: el stock pudo cambiar mientras
      el cliente pagaba (otra caja vendió lo mismo, llegó un snapshot…) */
   if(cartStockProblems().length){ hidePayModal(); await ensureCartStock(); return; }
@@ -3808,7 +3822,7 @@ function startProductScan(){
 async function loadSellers(){
   g('sellersGrid').innerHTML='<div class="col-span-3 py-10 text-center text-slate-400"><i class="fa-solid fa-spinner fa-spin mr-2"></i>Cargando…</div>';
   try{
-    const snap=await db.collection('users').where('role','==','seller').get();
+    const snap=await db.collection('users').where('role','in',['seller','vendedor']).get();
     S.allSellers=snap.docs.map(d=>({uid:d.id,...d.data()}));
     renderSellers();
     const sel=g('histSellerFilter');
@@ -3829,13 +3843,16 @@ function renderSellers(){
     </div>
     <p class="font-bold text-slate-800 text-sm">${esc(s.name)}</p>
     <p class="text-slate-400 text-xs mt-0.5 truncate">${esc(s.email)}</p>
-    <p class="text-xs text-violet-600 font-semibold mt-1 mb-3"><i class="fa-solid fa-store mr-1"></i>${esc(s.branchName||'Sin sucursal asignada')}</p>
-    <div class="flex gap-1.5">
+    <p class="text-xs text-violet-600 font-semibold mt-1"><i class="fa-solid fa-store mr-1"></i>${esc(s.branchName||'Sin sucursal asignada')}</p>
+    <p class="text-xs mt-1 mb-3 ${s.horario&&s.horario.activo?'text-indigo-600 font-semibold':'text-slate-400'}"><i class="fa-regular fa-clock mr-1"></i>${s.horario&&s.horario.activo?esc(resumenHorario(s.horario)):'Sin horario: puede cobrar a cualquier hora'}</p>
+    <div class="grid grid-cols-3 gap-1.5">
+      <button onclick="openScheduleModal('${s.uid}')"
+        class="text-xs py-2.5 rounded-lg font-semibold bg-indigo-50 text-indigo-600 hover:bg-indigo-100 min-h-[40px]"><i class="fa-regular fa-clock mr-1"></i>Horario</button>
       <button onclick="openReassignBranch('${s.uid}','${esc(s.name).replace(/'/g,"\\'")}')"
-        class="flex-1 text-xs py-2.5 rounded-lg font-semibold bg-violet-50 text-violet-600 hover:bg-violet-100 min-h-[40px]"><i class="fa-solid fa-store mr-1"></i>Sucursal</button>
+        class="text-xs py-2.5 rounded-lg font-semibold bg-violet-50 text-violet-600 hover:bg-violet-100 min-h-[40px]"><i class="fa-solid fa-store mr-1"></i>Sucursal</button>
       <button onclick="toggleSeller('${s.uid}',${s.active})"
-        class="flex-1 text-xs py-2.5 rounded-lg font-semibold transition min-h-[40px] ${s.active?'bg-red-50 text-red-600 hover:bg-red-100 active:bg-red-200':'bg-emerald-50 text-emerald-600 hover:bg-emerald-100 active:bg-emerald-200'}">
-        <i class="fa-solid fa-${s.active?'user-slash':'user-check'} mr-1"></i>${s.active?'Dar de baja':'Reactivar'}
+        class="text-xs py-2.5 rounded-lg font-semibold transition min-h-[40px] ${s.active?'bg-red-50 text-red-600 hover:bg-red-100 active:bg-red-200':'bg-emerald-50 text-emerald-600 hover:bg-emerald-100 active:bg-emerald-200'}">
+        <i class="fa-solid fa-${s.active?'user-slash':'user-check'} mr-1"></i>${s.active?'Baja':'Reactivar'}
       </button>
     </div>
   </div>`).join('');
@@ -4016,6 +4033,392 @@ function exportCSV(){
   a.download='ventas_'+new Date().toISOString().split('T')[0]+'.csv'; a.click();
 }
 
+/* ════════════════════════════════════════════════════════════════
+   HORARIOS LABORALES · HORA SEGURA · PERMISOS · CONTEO DE CAJA
+
+   Hora segura: NO se usa el reloj del celular/PC. Se pide la hora al
+   servidor (encabezado Date del hosting, o Firebase como respaldo) y a
+   partir de ahí se cuenta con performance.now(), un reloj interno que
+   no cambia aunque muevan la hora o la zona horaria del dispositivo.
+   El horario se evalúa en la zona horaria del negocio.
+════════════════════════════════════════════════════════════════ */
+const TZ_DEFAULT = 'America/Mexico_City';
+const DIAS   = ['Domingo','Lunes','Martes','Miércoles','Jueves','Viernes','Sábado'];
+const DIAS_C = ['Dom','Lun','Mar','Mié','Jue','Vie','Sáb'];
+const REQ_KEY = 'posAccessReq_v1';
+
+const RELOJ = { base:null, fuente:'', prom:null, ultimoIntento:0 };
+function sincronizarReloj(){
+  if(RELOJ.prom) return RELOJ.prom;
+  RELOJ.ultimoIntento = Date.now();
+  RELOJ.prom = (async () => {
+    /* 1) Hora del propio servidor (cabecera Date), sin caché */
+    try{
+      const t0 = performance.now();
+      const r  = await fetch(location.pathname + '?hora=' + Date.now(), {method:'HEAD', cache:'no-store'});
+      const t1 = performance.now();
+      const ms = Date.parse(r.headers.get('date') || '');
+      if(!isNaN(ms)){ RELOJ.base = {server: ms + 500, perf: (t0+t1)/2, wall: Date.now()}; RELOJ.fuente = 'servidor'; return true; }
+    }catch(e){}
+    /* 2) Respaldo: Firebase escribe su propia hora y la leemos */
+    try{
+      if(TENANT && S.tid){
+        const ref = db.collection('terminals').doc(S.tid);
+        await ref.set({horaProbe: FS.FieldValue.serverTimestamp()}, {merge:true});
+        const snap = await ref.get({source:'server'});
+        const ts = snap.data() && snap.data().horaProbe;
+        if(ts && ts.toMillis){ RELOJ.base = {server: ts.toMillis(), perf: performance.now(), wall: Date.now()}; RELOJ.fuente = 'firebase'; return true; }
+      }
+    }catch(e){}
+    return false;
+  })().finally(() => { RELOJ.prom = null; actualizarHorario(); });
+  return RELOJ.prom;
+}
+/* Hora real en milisegundos (null si todavía no se pudo verificar) */
+function horaSegura(){ return RELOJ.base ? RELOJ.base.server + (performance.now() - RELOJ.base.perf) : null; }
+/* Si el reloj del dispositivo "brincó" (lo movieron o se durmió), se vuelve a preguntar */
+function revisarSaltoDeReloj(){
+  if(!RELOJ.base) return;
+  const perfEl = performance.now() - RELOJ.base.perf, wallEl = Date.now() - RELOJ.base.wall;
+  if(Math.abs(wallEl - perfEl) > 90000 && navigator.onLine && Date.now() - RELOJ.ultimoIntento > 30000) sincronizarReloj();
+}
+
+/* Día de la semana y minuto del día en la zona del negocio */
+function partesHora(ms, tz){
+  try{
+    const f = new Intl.DateTimeFormat('en-US', {timeZone: tz || TZ_DEFAULT, weekday:'short', hour:'2-digit', minute:'2-digit', hourCycle:'h23'});
+    const p = Object.fromEntries(f.formatToParts(new Date(ms)).map(x => [x.type, x.value]));
+    return { dow: ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'].indexOf(p.weekday), min: (parseInt(p.hour,10)%24)*60 + parseInt(p.minute,10) };
+  }catch(e){ return partesHora(ms, TZ_DEFAULT); }
+}
+function horaTexto(ms, tz){
+  try{ return new Intl.DateTimeFormat('es-MX', {timeZone: tz || TZ_DEFAULT, hour:'2-digit', minute:'2-digit', hourCycle:'h23'}).format(new Date(ms)); }
+  catch(e){ return new Date(ms).toLocaleTimeString('es-MX',{hour:'2-digit',minute:'2-digit'}); }
+}
+const aMin = t => { const m = String(t||'').match(/^(\d{1,2}):(\d{2})/); return m ? (+m[1])*60 + (+m[2]) : null; };
+
+/* ¿Está dentro de su horario en este momento? */
+function evaluarHorario(h, ms){
+  const {dow, min} = partesHora(ms, h.tz);
+  const tol = Math.max(0, Math.min(120, Number(h.tolerancia)||0));
+  const dia = d => (h.dias || {})[d];
+  const hoy = dia(dow);
+  if(hoy){
+    const i = aMin(hoy.ini), f = aMin(hoy.fin);
+    if(i!=null && f!=null){
+      if(f > i){ if(min >= i - tol && min < f) return {dentro:true, hasta:hoy.fin}; }
+      else if(min >= i - tol) return {dentro:true, hasta:hoy.fin};          // turno nocturno, empezó hoy
+    }
+  }
+  const ayer = dia((dow + 6) % 7);                                          // turno nocturno que empezó ayer
+  if(ayer){ const i = aMin(ayer.ini), f = aMin(ayer.fin); if(i!=null && f!=null && f <= i && min < f) return {dentro:true, hasta:ayer.fin}; }
+  return {dentro:false};
+}
+/* "Lun–Vie 08:00–16:00 · Sáb 09:00–14:00" */
+function resumenHorario(h){
+  const orden = [1,2,3,4,5,6,0], grupos = [];
+  orden.forEach(d => {
+    const r = (h.dias||{})[d]; const k = r ? r.ini + '–' + r.fin : null;
+    const ult = grupos[grupos.length-1];
+    if(k && ult && ult.k === k && orden.indexOf(ult.fin) === orden.indexOf(d) - 1) ult.fin = d;
+    else if(k) grupos.push({k, ini:d, fin:d});
+  });
+  if(!grupos.length) return 'Sin días de trabajo';
+  return grupos.map(x => (x.ini===x.fin ? DIAS_C[x.ini] : DIAS_C[x.ini] + '–' + DIAS_C[x.fin]) + ' ' + x.k).join(' · ');
+}
+
+/* ¿Puede cobrar ahora? → {ok, motivo:'fuera'|'sinHora', permiso, hasta} */
+function estadoCobro(){
+  if(!S.isSeller || window._phoneMode) return {ok:true};
+  const h = PERFIL && PERFIL.horario;
+  if(!h || !h.activo) return {ok:true};
+  const ahora = horaSegura();
+  if(ahora == null) return {ok:false, motivo:'sinHora'};
+  if(S.acceso && S.acceso.status === 'approved' && S.acceso.hasta && ahora < S.acceso.hasta)
+    return {ok:true, permiso:true, hasta:S.acceso.hasta};
+  return evaluarHorario(h, ahora).dentro ? {ok:true} : {ok:false, motivo:'fuera'};
+}
+/* El vendedor debe contar la caja antes de cobrar (si el módulo de turnos está prendido) */
+function requiereConteo(){ return !!S.isSeller && MOD.turnos !== false && !S.currentShift && !window._phoneMode; }
+const algunaVentanaAbierta = () => [...document.querySelectorAll('[id$="Modal"]')].some(m => !m.classList.contains('hidden'));
+
+/* ── Aviso arriba de la venta + cambios de estado ── */
+let _horarioPrevOk = null;
+function actualizarHorario(){
+  revisarSaltoDeReloj();
+  const b = g('horarioBanner'); if(!b) return;
+  const h = PERFIL && PERFIL.horario;
+  if(!S.isSeller || !h || !h.activo || window._phoneMode){ b.classList.add('hidden'); _horarioPrevOk = null; return; }
+  const st = estadoCobro();
+  const caja = (cls, icono, texto, extra='') => `<div class="flex items-center gap-3 rounded-xl px-3 py-2.5 border ${cls}">
+      <i class="fa-solid ${icono} text-lg shrink-0"></i><div class="flex-1 min-w-0 text-sm leading-snug">${texto}</div>${extra}</div>`;
+  const pendiente = S.acceso && S.acceso.status === 'pending';
+  let html = '';
+  if(st.motivo === 'sinHora'){
+    html = caja('bg-amber-50 border-amber-200 text-amber-800','fa-clock',
+      '<b>Verificando la hora…</b> Para cobrar necesitas internet una vez al abrir el POS.',
+      '<button onclick="sincronizarReloj()" class="shrink-0 bg-amber-500 text-white text-xs font-bold px-3 rounded-lg min-h-[38px]">Reintentar</button>');
+  } else if(st.motivo === 'fuera'){
+    html = caja('bg-red-50 border-red-200 text-red-800','fa-lock',
+      '<b>Fuera de tu horario.</b> Puedes escanear, pero para cobrar necesitas permiso.<span class="block text-xs opacity-80">' + esc(resumenHorario(h)) + '</span>',
+      pendiente ? '<span class="shrink-0 text-xs font-bold bg-white border border-red-200 rounded-lg px-2.5 py-2"><i class="fa-solid fa-hourglass-half mr-1"></i>Esperando</span>'
+                : '<button onclick="solicitarAcceso()" class="shrink-0 bg-indigo-600 text-white text-xs font-bold px-3 rounded-lg min-h-[38px]">Pedir permiso</button>');
+  } else if(st.permiso){
+    html = caja('bg-emerald-50 border-emerald-200 text-emerald-800','fa-circle-check',
+      '<b>Permiso del administrador</b> hasta las ' + horaTexto(st.hasta, h.tz) + '.');
+  }
+  b.innerHTML = html;
+  b.classList.toggle('hidden', !html);
+  /* Empieza su horario → debe contar la caja; termina → que cierre su turno */
+  if(_horarioPrevOk === false && st.ok){
+    showToast('Ya puedes cobrar','success');
+    if(requiereConteo() && !algunaVentanaAbierta()) openShiftModal({forzado:true});
+  }
+  if(_horarioPrevOk === true && !st.ok && st.motivo === 'fuera' && S.currentShift){
+    showToast('Terminó tu horario. Cierra tu turno contando la caja.','warning');
+  }
+  _horarioPrevOk = st.ok;
+  pintarBloqueo();
+}
+
+/* ── Ventana "fuera de horario" ── */
+function mostrarBloqueo(motivo){
+  S._bloqueoMotivo = motivo;
+  pintarBloqueo();
+  g('bloqueoModal').classList.remove('hidden');
+  beep('error');
+  if(motivo === 'sinHora') sincronizarReloj();
+}
+function hideBloqueo(){ g('bloqueoModal')?.classList.add('hidden'); }
+function pintarBloqueo(){
+  const m = g('bloqueoModal'); if(!m || m.classList.contains('hidden')) return;
+  const h = (PERFIL && PERFIL.horario) || {};
+  const ahora = horaSegura();
+  const sinHora = S._bloqueoMotivo === 'sinHora' && ahora == null;
+  g('bloqueoTitulo').textContent = sinHora ? 'No se pudo verificar la hora' : 'Fuera de tu horario';
+  g('bloqueoMsg').textContent = sinHora
+    ? 'Para cobrar necesitas internet una vez al abrir el POS. La hora no se toma del celular.'
+    : 'Puedes seguir escaneando. Para cobrar, el administrador tiene que darte permiso.';
+  g('bloqueoHorario').innerHTML = '<b>Tu horario:</b> ' + esc(resumenHorario(h))
+    + (ahora != null ? '<span class="block text-xs text-slate-400 mt-0.5">Hora del servidor: ' + horaTexto(ahora, h.tz) + '</span>' : '');
+  const est = g('bloqueoEstado'), btn = g('bloqueoPedir');
+  const a = S.acceso;
+  est.classList.add('hidden'); btn.classList.toggle('hidden', sinHora);
+  if(a && a.status === 'pending'){
+    est.className = 'mt-3 rounded-xl px-3 py-2.5 text-sm font-semibold bg-amber-50 text-amber-700';
+    est.innerHTML = '<i class="fa-solid fa-hourglass-half mr-1"></i>Solicitud enviada. Esperando al administrador…';
+    btn.classList.add('hidden');
+  } else if(a && a.status === 'denied'){
+    est.className = 'mt-3 rounded-xl px-3 py-2.5 text-sm font-semibold bg-red-50 text-red-600';
+    est.innerHTML = '<i class="fa-solid fa-circle-xmark mr-1"></i>El administrador rechazó tu última solicitud.';
+  }
+}
+
+/* ── Solicitud de permiso (vendedor) ── */
+async function solicitarAcceso(){
+  if(!navigator.onLine){ showToast('Necesitas internet para pedir permiso','warning'); return; }
+  if(S.acceso && S.acceso.status === 'pending'){ showToast('Ya enviaste una solicitud. Espera la respuesta.','info'); return; }
+  const btn = g('bloqueoPedir'); if(btn) btn.disabled = true;
+  try{
+    const {total} = cartTotals();
+    const ref = await db.collection('accessRequests').add({
+      sellerId: S.user.uid,
+      sellerName: nombreCajeroActual() || S.user.email || 'Vendedor',
+      branchId: S.userBranchId || null, branchName: S.userBranchName || null,
+      motivo: 'fuera_de_horario', status: 'pending',
+      createdAt: FS.FieldValue.serverTimestamp(),
+      articulos: S.cart.length, total
+    });
+    try{ localStorage.setItem(REQ_KEY, ref.id); }catch(e){}
+    S.acceso = {id: ref.id, status: 'pending'};
+    escucharSolicitud(ref.id);
+    showToast('Solicitud enviada al administrador','success');
+  }catch(e){
+    showToast(e.code === 'permission-denied'
+      ? 'Falta dar permiso a la colección "accessRequests" en las reglas de Firebase'
+      : 'No se pudo enviar: ' + e.message, 'error');
+  }finally{
+    if(btn) btn.disabled = false;
+    actualizarHorario(); pintarBloqueo();
+  }
+}
+function escucharSolicitud(id){
+  try{ S.reqUnsub && S.reqUnsub(); }catch(e){}
+  S.reqUnsub = db.collection('accessRequests').doc(id).onSnapshot(snap => {
+    const d = snap.data(); if(!d || d.sellerId !== (S.user && S.user.uid)) return;
+    const antes = S.acceso && S.acceso.status;
+    const desde = d.approvedAt && d.approvedAt.toMillis ? d.approvedAt.toMillis() : null;
+    S.acceso = {id, status: d.status, minutes: d.minutes, hasta: (d.status === 'approved' && desde) ? desde + (d.minutes||30)*60000 : null};
+    if(antes === 'pending' && d.status === 'approved' && S.acceso.hasta && S.acceso.hasta > (horaSegura() || 0)){
+      beep('success'); hideBloqueo();
+      showToast('✅ Ya puedes cobrar: el administrador te dio permiso','success');
+      if(requiereConteo()) openShiftModal({forzado:true});
+    }
+    if(antes === 'pending' && d.status === 'denied'){ beep('error'); showToast('El administrador rechazó tu solicitud','error'); }
+    actualizarHorario();
+  }, e => console.warn('Solicitud de acceso:', e.code || e.message));
+}
+
+/* ── Solicitudes (administrador): avisos en tiempo real ── */
+function escucharSolicitudesAdmin(){
+  if(S.reqAdminUnsub) return;
+  const vistos = new Set(); let primera = true;
+  S.reqAdminUnsub = db.collection('accessRequests').where('status','==','pending').onSnapshot(snap => {
+    S.solicitudes = snap.docs.map(d => ({id: d.id, ...d.data()}))
+      .sort((a,b) => (a.createdAt && a.createdAt.toMillis ? a.createdAt.toMillis() : 0) - (b.createdAt && b.createdAt.toMillis ? b.createdAt.toMillis() : 0));
+    const nuevas = S.solicitudes.filter(r => !vistos.has(r.id));
+    nuevas.forEach(r => vistos.add(r.id));
+    if(nuevas.length && !primera) nuevas.forEach(avisarSolicitud);
+    if(primera && S.solicitudes.length) showToast('Tienes ' + S.solicitudes.length + ' solicitud(es) para cobrar pendiente(s)','warning');
+    primera = false;
+    pintarSolicitudes();
+  }, e => console.warn('Solicitudes de acceso:', e.code || e.message));
+}
+function avisarSolicitud(r){
+  const txt = (r.sellerName || 'Un vendedor') + ' pide permiso para cobrar' + (r.branchName ? ' · ' + r.branchName : '');
+  showToast('🔔 ' + txt, 'warning');
+  beep('success'); setTimeout(() => beep('success'), 350);
+  try{ navigator.vibrate && navigator.vibrate([120,80,120]); }catch(e){}
+  try{
+    if('Notification' in window && Notification.permission === 'granted'){
+      const n = new Notification('Solicitud para cobrar', {body: txt + '. Toca para responder.', tag: 'pos-' + r.id, requireInteraction: true});
+      n.onclick = () => { window.focus(); openAccessModal(); n.close(); };
+    }
+  }catch(e){ /* en Android sin service worker no hay notificación del sistema: queda el aviso en pantalla */ }
+}
+function pintarSolicitudes(){
+  const n = (S.solicitudes || []).length, pill = g('reqPill');
+  if(pill){ pill.classList.toggle('hidden', !(S.isAdmin && n)); g('reqPillText').textContent = n === 1 ? '1 solicitud para cobrar' : n + ' solicitudes para cobrar'; }
+  const list = g('accessList'); if(!list) return;
+  if(!n){ list.innerHTML = '<p class="text-sm text-slate-400 text-center py-6">No hay solicitudes pendientes.</p>'; return; }
+  list.innerHTML = S.solicitudes.map(r => {
+    const t = r.createdAt && r.createdAt.toDate ? r.createdAt.toDate().toLocaleTimeString('es-MX',{hour:'2-digit',minute:'2-digit'}) : 'ahora';
+    const opc = [[30,'30 min'],[60,'1 h'],[120,'2 h'],[240,'4 h']];
+    return `<div class="border border-amber-200 bg-amber-50/50 rounded-xl p-3">
+      <div class="flex items-start justify-between gap-2">
+        <div class="min-w-0"><p class="font-bold text-slate-800 truncate">${esc(r.sellerName||'Vendedor')}</p>
+          <p class="text-xs text-slate-500">${esc(r.branchName||'')}${r.branchName?' · ':''}pidió a las ${t}${r.articulos?` · ${r.articulos} producto(s), ${fmt(r.total||0)}`:''}</p></div>
+        <span class="text-[10px] font-bold uppercase bg-amber-100 text-amber-700 rounded-full px-2 py-0.5 shrink-0">Fuera de horario</span>
+      </div>
+      <p class="text-xs text-slate-500 mt-2 mb-1.5">Dar permiso para cobrar durante:</p>
+      <div class="grid grid-cols-4 gap-1.5">${opc.map(([m,l]) => `<button onclick="responderSolicitud('${r.id}',${m})" class="bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold rounded-lg min-h-[40px]">${l}</button>`).join('')}</div>
+      <button onclick="responderSolicitud('${r.id}',0)" class="w-full mt-1.5 text-red-500 hover:bg-red-50 text-xs font-bold rounded-lg min-h-[38px]">Rechazar</button>
+    </div>`;
+  }).join('');
+}
+async function responderSolicitud(id, minutos){
+  const yo = limpiarNombre(PERFIL && PERFIL.name) || (S.user && S.user.email) || 'Administrador';
+  try{
+    await db.collection('accessRequests').doc(id).update(minutos > 0
+      ? {status:'approved', minutes: minutos, approvedAt: FS.FieldValue.serverTimestamp(), resolvedBy: yo}
+      : {status:'denied', resolvedAt: FS.FieldValue.serverTimestamp(), resolvedBy: yo});
+    showToast(minutos > 0 ? 'Permiso concedido por ' + (minutos >= 60 ? minutos/60 + ' h' : minutos + ' min') : 'Solicitud rechazada', minutos > 0 ? 'success' : 'info');
+    if(!(S.solicitudes||[]).filter(r => r.id !== id).length) hideAccessModal();
+  }catch(e){ showToast('No se pudo responder: ' + (e.code || e.message), 'error'); }
+}
+function openAccessModal(){
+  pintarSolicitudes();
+  g('notifPermBtn').classList.toggle('hidden', !('Notification' in window) || Notification.permission !== 'default');
+  g('accessModal').classList.remove('hidden');
+}
+function hideAccessModal(){ g('accessModal')?.classList.add('hidden'); }
+function pedirPermisoNotificaciones(){
+  try{ Notification.requestPermission().then(p => { g('notifPermBtn').classList.add('hidden'); if(p === 'granted') showToast('Listo: también te avisaremos con notificación','success'); }); }catch(e){}
+}
+
+/* ── Editor de horario (administrador) ── */
+let _schUid = null;
+function openScheduleModal(uid){
+  const v = (S.allSellers || []).find(x => x.uid === uid); if(!v) return;
+  _schUid = uid;
+  const tzLocal = (Intl.DateTimeFormat().resolvedOptions().timeZone) || TZ_DEFAULT;
+  const h = v.horario || {activo:true, tz: tzLocal, tolerancia: 10, dias: {1:{ini:'08:00',fin:'16:00'},2:{ini:'08:00',fin:'16:00'},3:{ini:'08:00',fin:'16:00'},4:{ini:'08:00',fin:'16:00'},5:{ini:'08:00',fin:'16:00'}}};
+  g('schSellerName').textContent = v.name || v.email || '';
+  g('schActivo').checked = !!h.activo;
+  g('schTol').value = h.tolerancia != null ? h.tolerancia : 10;
+  const zonas = [...new Set([h.tz || tzLocal, tzLocal, 'America/Mexico_City','America/Monterrey','America/Merida','America/Cancun','America/Chihuahua','America/Mazatlan','America/Hermosillo','America/Tijuana','America/Bogota','America/Lima','America/Guatemala','America/New_York','America/Los_Angeles'])];
+  g('schTz').innerHTML = zonas.map(z => `<option value="${z}" ${z === (h.tz||tzLocal) ? 'selected' : ''}>${z.replace('America/','').replace(/_/g,' ')}</option>`).join('');
+  g('schDays').innerHTML = [1,2,3,4,5,6,0].map(d => {
+    const r = (h.dias||{})[d];
+    return `<div class="grid grid-cols-[auto_2.6rem_minmax(0,1fr)_auto_minmax(0,1fr)] items-center gap-2 bg-white border border-slate-200 rounded-lg px-2.5 py-1.5">
+      <input id="schOn${d}" type="checkbox" ${r?'checked':''} onchange="g('schIni${d}').disabled=g('schFin${d}').disabled=!this.checked" class="w-5 h-5 accent-indigo-600">
+      <label for="schOn${d}" class="text-sm font-bold text-slate-700">${DIAS_C[d]}</label>
+      <input id="schIni${d}" type="time" value="${r?r.ini:'08:00'}" ${r?'':'disabled'} class="w-full min-w-0 border border-slate-200 rounded-lg px-1.5 py-1.5 text-sm disabled:opacity-40">
+      <span class="text-xs text-slate-400">a</span>
+      <input id="schFin${d}" type="time" value="${r?r.fin:'16:00'}" ${r?'':'disabled'} class="w-full min-w-0 border border-slate-200 rounded-lg px-1.5 py-1.5 text-sm disabled:opacity-40">
+    </div>`;
+  }).join('');
+  g('scheduleModal').classList.remove('hidden');
+}
+function hideScheduleModal(){ g('scheduleModal')?.classList.add('hidden'); }
+function copiarHorarioLunes(){
+  const on = g('schOn1').checked, ini = g('schIni1').value, fin = g('schFin1').value;
+  [2,3,4,5].forEach(d => { g('schOn'+d).checked = on; g('schIni'+d).value = ini; g('schFin'+d).value = fin; g('schIni'+d).disabled = g('schFin'+d).disabled = !on; });
+}
+async function guardarHorario(){
+  if(!_schUid) return;
+  const dias = {};
+  for(const d of [0,1,2,3,4,5,6]){
+    if(!g('schOn'+d).checked) continue;
+    const ini = g('schIni'+d).value, fin = g('schFin'+d).value;
+    if(!ini || !fin || ini === fin){ showToast('Revisa la hora de ' + DIAS[d], 'warning'); return; }
+    dias[d] = {ini, fin};
+  }
+  const activo = g('schActivo').checked;
+  if(activo && !Object.keys(dias).length){ showToast('Marca al menos un día de trabajo', 'warning'); return; }
+  const horario = {activo, tz: g('schTz').value || TZ_DEFAULT, tolerancia: Math.max(0, Math.min(60, parseInt(g('schTol').value,10)||0)), dias};
+  const btn = g('schSaveBtn'); btn.disabled = true;
+  try{
+    await db.collection('users').doc(_schUid).update({horario, horarioActualizado: FS.FieldValue.serverTimestamp()});
+    const v = S.allSellers.find(x => x.uid === _schUid); if(v) v.horario = horario;
+    renderSellers(); hideScheduleModal();
+    showToast('Horario guardado', 'success');
+  }catch(e){ showToast('No se pudo guardar: ' + (e.code || e.message), 'error'); }
+  finally{ btn.disabled = false; }
+}
+
+/* ── Admin · Turnos: comparar el conteo al recibir la caja con lo que dejó el turno anterior ── */
+const msDe = (ts, iso) => (ts && ts.toMillis) ? ts.toMillis() : (iso ? Date.parse(iso) : 0) || 0;
+function cambioDeTurno(s){
+  const t = x => msDe(x.openAt, x.openISO);
+  const antes = (S.shiftsCache || []).filter(x => x.id !== s.id && (x.branchId||null) === (s.branchId||null) && t(x) < t(s));
+  if(!antes.length) return null;
+  const prev = antes.reduce((a,b) => t(b) > t(a) ? b : a);
+  const dejo = prev.countedCash != null ? prev.countedCash : (prev.status === 'open' ? null : (prev.expectedCash != null ? prev.expectedCash : null));
+  return {prev, dejo, diff: dejo == null ? null : Math.round(((s.openingCash||0) - dejo)*100)/100};
+}
+
+/* ── Arranque tras iniciar sesión ── */
+function iniciarHorarios(){
+  if(!S.user) return;
+  sincronizarReloj();
+  if(!S._relojTimer){
+    S._relojTimer = setInterval(actualizarHorario, 20000);
+    setInterval(() => { if(navigator.onLine) sincronizarReloj(); }, 10*60000);
+    addEventListener('online', () => sincronizarReloj());
+    document.addEventListener('visibilitychange', () => { if(!document.hidden){ sincronizarReloj(); actualizarHorario(); } });
+  }
+  if(S.isSeller){
+    /* Su horario en vivo: si el admin lo cambia, se aplica al momento */
+    if(PERFIL_REF && !S.perfilUnsub){
+      S.perfilUnsub = PERFIL_REF.onSnapshot(sn => {
+        if(sn.exists){ PERFIL = {uid: S.user.uid, ...sn.data()}; actualizarHorario(); }
+      }, e => console.warn('Perfil:', e.code || e.message));
+    }
+    let rid = null; try{ rid = localStorage.getItem(REQ_KEY); }catch(e){}
+    if(rid) escucharSolicitud(rid);
+    /* Al empezar: si está en su horario y no ha contado la caja, se le pide */
+    setTimeout(async () => {
+      await sincronizarReloj();
+      try{ await checkCurrentShift(); }catch(e){}
+      if(estadoCobro().ok && requiereConteo() && !algunaVentanaAbierta()) openShiftModal({forzado:true});
+      actualizarHorario();
+    }, 1200);
+  }
+  if(S.isAdmin) escucharSolicitudesAdmin();
+  actualizarHorario();
+}
+
 /* ════════════════════════════════════
    SHIFTS / CORTE DE CAJA
    NOTE: requires a "shifts" collection with read/write rules for
@@ -4064,7 +4467,23 @@ function shiftExpectedCash(s){
   if(!s) return 0;
   return (s.openingCash||0)+(s.cashSales||0)-(s.cashOut||0);
 }
-function openShiftModal(){
+function openShiftModal(opts){
+  opts = (opts && typeof opts === 'object' && !opts.type) ? opts : {};
+  const admin = !!S.isAdmin;
+  g('shiftForcedMsg').classList.toggle('hidden', !opts.forzado);
+  g('shiftModalTitle').textContent = S.currentShift ? 'Cerrar turno' : 'Conteo de caja';
+  limpiarDenom('op'); limpiarDenom('cl');
+  /* El vendedor NO ve cuánto debería haber: solo cuenta */
+  g('shiftAdminSummary').classList.toggle('hidden', !admin);
+  g('shiftDiffRow').classList.toggle('hidden', !admin);
+  g('shiftSellerSummary').classList.toggle('hidden', admin);
+  g('shiftCloseHelp').classList.toggle('hidden', admin);
+  if(S.currentShift && !admin){
+    const desde = S.currentShift.openISO ? new Date(S.currentShift.openISO) : null;
+    g('shiftSinceEl').textContent = desde ? desde.toLocaleTimeString('es-MX',{hour:'2-digit',minute:'2-digit'}) : '—';
+    const n = S.currentShift.salesCount||0;
+    g('shiftSalesCountEl').textContent = n + ' venta' + (n===1?'':'s');
+  }
   if(S.currentShift){
     g('shiftOpenArea').classList.add('hidden'); g('shiftCloseArea').classList.remove('hidden');
     g('shiftOpenAmtEl').textContent=fmt(S.currentShift.openingCash||0);
@@ -4079,6 +4498,15 @@ function openShiftModal(){
   }
   g('shiftModal').classList.remove('hidden');
 }
+/* Suma del conteo por billetes y monedas */
+function calcDenom(pre, destino){
+  let total = 0;
+  document.querySelectorAll('.den-'+pre).forEach(i => { total += (parseFloat(i.value)||0) * (parseFloat(i.dataset.den)||0); });
+  const el = g(destino);
+  el.value = total ? Math.round(total*100)/100 : '';
+  el.dispatchEvent(new Event('input'));
+}
+function limpiarDenom(pre){ document.querySelectorAll('.den-'+pre).forEach(i => i.value=''); }
 function hideShiftModal(){ g('shiftModal').classList.add('hidden'); }
 function calcShiftDiff(){
   const expected=shiftExpectedCash(S.currentShift);
@@ -4089,7 +4517,9 @@ function calcShiftDiff(){
   el.className='text-xl font-black '+(Math.abs(diff)<0.01?'text-emerald-600':diff>0?'text-blue-600':'text-red-500');
 }
 async function openShift(){
-  const amt=parseFloat(g('shiftOpenInput').value)||0;
+  const rawAmt = g('shiftOpenInput').value;
+  if(rawAmt===''){ showToast('Escribe cuánto dinero hay en la caja (si no hay nada, pon 0)','warning'); g('shiftOpenInput').focus(); return; }
+  const amt=parseFloat(rawAmt)||0;
   const id=newLocalId();
   const now=new Date();
   const data={
@@ -4103,14 +4533,17 @@ async function openShift(){
   outboxPush({id:'shiftopen_'+id, type:'shiftOpen', tsISO:now.toISOString(), tries:0,
     payload:{shiftId:id, ...data}, label:`Apertura de turno ${fmt(amt)}`});
   saveLocalShift(); hideShiftModal();
-  showToast('Turno abierto con '+fmt(amt),'success');
+  showToast(S.isAdmin ? 'Turno abierto con '+fmt(amt) : 'Conteo registrado. ¡Ya puedes cobrar!','success');
   if(isOnline()) flushOutbox();
+  /* Si estaba cobrando cuando se le pidió contar, seguimos con el cobro */
+  if(S._cobroPendiente){ const m=S._cobroPendiente; S._cobroPendiente=null; setTimeout(()=>cobrar(m), 250); }
 }
 async function closeShift(){
   if(!S.currentShift) return;
+  if(g('shiftCountedInput').value===''){ showToast('Escribe cuánto efectivo contaste','warning'); g('shiftCountedInput').focus(); return; }
   const counted=parseFloat(g('shiftCountedInput').value)||0;
   const expected=shiftExpectedCash(S.currentShift);
-  const ok=await confirmAction({title:'¿Cerrar turno?', msg:'Se registrará el corte de caja con la diferencia calculada.', okLabel:'Cerrar turno', icon:'🗄️'});
+  const ok=await confirmAction({title:'¿Cerrar turno?', msg: S.isAdmin ? 'Se registrará el corte de caja con la diferencia calculada.' : 'Se registrará tu conteo: '+fmt(counted)+'. El administrador revisará el corte.', okLabel:'Cerrar turno', icon:'🗄️'});
   if(!ok) return;
   const now=new Date();
   const snapshot={
@@ -4127,7 +4560,8 @@ async function closeShift(){
     label:`Corte de caja ${fmt(counted)}`});
   const diff=counted-expected;
   S.currentShift=null; saveLocalShift(); hideShiftModal();
-  showToast('Turno cerrado. Diferencia: '+fmt(diff), Math.abs(diff)<0.01?'success':'warning');
+  if(S.isAdmin) showToast('Turno cerrado. Diferencia: '+fmt(diff), Math.abs(diff)<0.01?'success':'warning');
+  else showToast('Turno cerrado. Conteo registrado: '+fmt(counted),'success');
   if(isOnline()) flushOutbox();
 }
 
@@ -4164,7 +4598,7 @@ function renderShiftsTable(){
       <td class="r1c1 px-3 sm:px-4 py-3 text-sm font-semibold text-slate-800 max-w-[160px] break-anywhere">${esc(s.sellerName||'–')}</td>
       <td class="r2c1 px-3 sm:px-4 py-3 text-xs text-slate-600 whitespace-nowrap" data-l="Abrió">${open}</td>
       <td class="px-3 sm:px-4 py-3 text-xs text-slate-600 whitespace-nowrap hidden sm:table-cell">${close}</td>
-      <td class="r3c1 px-3 sm:px-4 py-3 text-left sm:text-right text-xs sm:text-sm" data-l="Fondo">${fmt(s.openingCash||0)}</td>
+      <td class="r3c1 px-3 sm:px-4 py-3 text-left sm:text-right text-xs sm:text-sm" data-l="Contó al abrir">${fmt(s.openingCash||0)}${(()=>{ const c=cambioDeTurno(s); return (c&&c.diff!=null&&Math.abs(c.diff)>=0.01)?`<span class="block text-[10px] font-bold ${c.diff<0?'text-red-500':'text-blue-600'}">cambio de turno ${c.diff>0?'+':''}${fmt(c.diff)}</span>`:''; })()}</td>
       <td class="px-3 sm:px-4 py-3 text-right text-xs sm:text-sm hidden md:table-cell">${s.expectedCash!=null?fmt(s.expectedCash):'—'}</td>
       <td class="r2c2 px-3 sm:px-4 py-3 text-right text-sm font-bold num ${diff==null?'text-slate-300':Math.abs(diff)<0.01?'text-emerald-600':diff<0?'text-red-500':'text-blue-600'}">${diff!=null?(diff>=0?'+':'')+fmt(diff):'—'}</td>
       <td class="r1c2 px-3 sm:px-4 py-3 text-center">
@@ -4209,6 +4643,14 @@ async function showShiftDetail(id){
       ${row('Apertura', tsLabel(s.openAt, s.openISO))}
       ${row('Cierre', s.closeAt||s.closeISO?tsLabel(s.closeAt,s.closeISO):'Turno abierto')}
     </div>
+    ${(()=>{ const c=cambioDeTurno(s); if(!c) return '';
+      return `<p class="text-xs font-bold text-slate-400 uppercase tracking-wide mb-1">Cambio de turno</p>
+      <div class="bg-white border ${c.diff!=null&&Math.abs(c.diff)>=0.01?'border-red-200':'border-slate-200'} rounded-xl p-3 text-sm mb-3">
+        ${row('Recibió la caja de', esc(c.prev.sellerName||'—'))}
+        ${row(c.prev.countedCash!=null?'Ese turno dejó (contado)':'Ese turno debía dejar', c.dejo!=null?fmt(c.dejo):'Turno sin cerrar')}
+        ${row('Al recibir contó', fmt(s.openingCash||0))}
+        ${c.diff!=null?row('Diferencia en el cambio', (c.diff>0?'+':'')+fmt(c.diff), Math.abs(c.diff)<0.01?'text-emerald-600':c.diff<0?'text-red-500':'text-blue-600'):''}
+      </div>`; })()}
     <p class="text-xs font-bold text-slate-400 uppercase tracking-wide mb-1">Caja</p>
     <div class="bg-white border border-slate-200 rounded-xl p-3 text-sm mb-3">
       ${row('Fondo inicial', fmt(s.openingCash||0))}
@@ -5067,6 +5509,7 @@ document.addEventListener('keydown',e=>{
     hideDiscountModal(); hideParkedModal(); hideReceiptModal(); hideShiftModal(); hideHardwareModal(); hideStockAlerts();
     hideBranchModal(); hideReassignBranchModal(); hideCarrierModal(); hideRechargeModal();
     hideEntryModal(); hideExpenseModal(); hideShiftDetail(); hideSyncModal();
+    hideBloqueo(); hideScheduleModal(); hideAccessModal();
     if(!g('confirmModal').classList.contains('hidden')) _confirmResolve(false);
     closeMobileCart();
   }
