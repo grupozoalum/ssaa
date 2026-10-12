@@ -1614,7 +1614,7 @@ function closeNavMore(){
    3) Si aun así no cuadra, el archivo del servidor ES viejo: se avisa
       cuál hay que volver a subir.
 ════════════════════════════════════════════════════════════════ */
-const POS_BUILD = '20261010h';
+const POS_BUILD = '20261010i';
 function verificarVersionArchivos(intento = 0){
   const meta = (document.querySelector('meta[name="pos-build"]')||{}).content || '';
   const css  = getComputedStyle(document.documentElement).getPropertyValue('--pos-css').replace(/["'\s]/g,'');
@@ -3844,7 +3844,10 @@ function renderSellers(){
     <p class="font-bold text-slate-800 text-sm">${esc(s.name)}</p>
     <p class="text-slate-400 text-xs mt-0.5 truncate">${esc(s.email)}</p>
     <p class="text-xs text-violet-600 font-semibold mt-1"><i class="fa-solid fa-store mr-1"></i>${esc(s.branchName||'Sin sucursal asignada')}</p>
-    <p class="text-xs mt-1 mb-3 ${s.horario&&s.horario.activo?'text-indigo-600 font-semibold':'text-slate-400'}"><i class="fa-regular fa-clock mr-1"></i>${s.horario&&s.horario.activo?esc(resumenHorario(s.horario)):'Sin horario: puede cobrar a cualquier hora'}</p>
+    <p class="text-xs mt-1 ${s.horario&&s.horario.activo?'text-indigo-600 font-semibold':'text-slate-400'}"><i class="fa-regular fa-clock mr-1"></i>${s.horario&&s.horario.activo?esc(resumenHorario(s.horario)):'Sin horario: puede cobrar a cualquier hora'}</p>
+    ${(()=>{ const pv = permisoVigente(s, horaSegura()); return pv
+      ? `<div class="flex items-center justify-between gap-2 mt-2 bg-emerald-50 border border-emerald-200 rounded-lg px-2.5 py-1.5"><span class="text-xs font-semibold text-emerald-700"><i class="fa-solid fa-unlock mr-1"></i>Permiso hasta las ${horaTexto(pv.hasta,(s.horario||{}).tz)}</span><button onclick="quitarPermiso('${s.uid}')" class="text-xs font-bold text-red-500 hover:underline min-h-[32px] px-1">Quitar</button></div>` : ''; })()}
+    <div class="mb-3"></div>
     <div class="grid grid-cols-3 gap-1.5">
       <button onclick="openScheduleModal('${s.uid}')"
         class="text-xs py-2.5 rounded-lg font-semibold bg-indigo-50 text-indigo-600 hover:bg-indigo-100 min-h-[40px]"><i class="fa-regular fa-clock mr-1"></i>Horario</button>
@@ -4045,7 +4048,16 @@ function exportCSV(){
 const TZ_DEFAULT = 'America/Mexico_City';
 const DIAS   = ['Domingo','Lunes','Martes','Miércoles','Jueves','Viernes','Sábado'];
 const DIAS_C = ['Dom','Lun','Mar','Mié','Jue','Vie','Sáb'];
-const REQ_KEY = 'posAccessReq_v1';
+/* El permiso para cobrar fuera de horario vive en Firebase, en la ficha del
+   vendedor (users/{uid}.permisoCobro = {approvedAt, minutes, reqId, por}).
+   Así lo ven al instante TODOS sus dispositivos y vence a la misma hora
+   en todos, porque approvedAt es la hora del servidor. */
+function permisoVigente(perfil, ahora){
+  const pc = perfil && perfil.permisoCobro;
+  if(!pc || !pc.approvedAt || !pc.approvedAt.toMillis || ahora == null) return null;
+  const hasta = pc.approvedAt.toMillis() + (Number(pc.minutes)||0) * 60000;
+  return ahora < hasta ? {hasta, reqId: pc.reqId, minutes: pc.minutes} : null;
+}
 
 const RELOJ = { base:null, fuente:'', prom:null, ultimoIntento:0 };
 function sincronizarReloj(){
@@ -4134,8 +4146,8 @@ function estadoCobro(){
   if(!h || !h.activo) return {ok:true};
   const ahora = horaSegura();
   if(ahora == null) return {ok:false, motivo:'sinHora'};
-  if(S.acceso && S.acceso.status === 'approved' && S.acceso.hasta && ahora < S.acceso.hasta)
-    return {ok:true, permiso:true, hasta:S.acceso.hasta};
+  const pv = permisoVigente(PERFIL, ahora);
+  if(pv) return {ok:true, permiso:true, hasta:pv.hasta};
   return evaluarHorario(h, ahora).dentro ? {ok:true} : {ok:false, motivo:'fuera'};
 }
 /* El vendedor debe contar la caja antes de cobrar (si el módulo de turnos está prendido) */
@@ -4174,8 +4186,9 @@ function actualizarHorario(){
     showToast('Ya puedes cobrar','success');
     if(requiereConteo() && !algunaVentanaAbierta()) openShiftModal({forzado:true});
   }
-  if(_horarioPrevOk === true && !st.ok && st.motivo === 'fuera' && S.currentShift){
-    showToast('Terminó tu horario. Cierra tu turno contando la caja.','warning');
+  if(_horarioPrevOk === true && !st.ok && st.motivo === 'fuera'){
+    showToast(S.currentShift ? 'Terminó tu horario o tu permiso. Cierra tu turno contando la caja.' : 'Terminó tu horario o tu permiso para cobrar.','warning');
+    hidePayModal();
   }
   _horarioPrevOk = st.ok;
   pintarBloqueo();
@@ -4227,11 +4240,10 @@ async function solicitarAcceso(){
       branchId: S.userBranchId || null, branchName: S.userBranchName || null,
       motivo: 'fuera_de_horario', status: 'pending',
       createdAt: FS.FieldValue.serverTimestamp(),
+      perfilPath: PERFIL_REF ? PERFIL_REF.path : null,   // dónde guardar el permiso
       articulos: S.cart.length, total
     });
-    try{ localStorage.setItem(REQ_KEY, ref.id); }catch(e){}
     S.acceso = {id: ref.id, status: 'pending'};
-    escucharSolicitud(ref.id);
     showToast('Solicitud enviada al administrador','success');
   }catch(e){
     showToast(e.code === 'permission-denied'
@@ -4242,21 +4254,26 @@ async function solicitarAcceso(){
     actualizarHorario(); pintarBloqueo();
   }
 }
-function escucharSolicitud(id){
-  try{ S.reqUnsub && S.reqUnsub(); }catch(e){}
-  S.reqUnsub = db.collection('accessRequests').doc(id).onSnapshot(snap => {
-    const d = snap.data(); if(!d || d.sellerId !== (S.user && S.user.uid)) return;
-    const antes = S.acceso && S.acceso.status;
-    const desde = d.approvedAt && d.approvedAt.toMillis ? d.approvedAt.toMillis() : null;
-    S.acceso = {id, status: d.status, minutes: d.minutes, hasta: (d.status === 'approved' && desde) ? desde + (d.minutes||30)*60000 : null};
-    if(antes === 'pending' && d.status === 'approved' && S.acceso.hasta && S.acceso.hasta > (horaSegura() || 0)){
-      beep('success'); hideBloqueo();
-      showToast('✅ Ya puedes cobrar: el administrador te dio permiso','success');
-      if(requiereConteo()) openShiftModal({forzado:true});
-    }
-    if(antes === 'pending' && d.status === 'denied'){ beep('error'); showToast('El administrador rechazó tu solicitud','error'); }
-    actualizarHorario();
-  }, e => console.warn('Solicitud de acceso:', e.code || e.message));
+/* Solicitudes pendientes del vendedor (en cualquiera de sus dispositivos) */
+function escucharMisSolicitudes(){
+  if(S.reqUnsub || !S.user) return;
+  let pendientesAntes = new Set();
+  S.reqUnsub = db.collection('accessRequests')
+    .where('sellerId','==',S.user.uid).where('status','==','pending')
+    .onSnapshot(async snap => {
+      const ids = new Set(snap.docs.map(d => d.id));
+      S.acceso = ids.size ? {id: [...ids][0], status:'pending'} : (S.acceso && S.acceso.status === 'denied' ? S.acceso : null);
+      /* Una que estaba pendiente ya no lo está: ¿la rechazaron? (si la aprobaron, avisa el perfil) */
+      for(const id of pendientesAntes){
+        if(ids.has(id)) continue;
+        try{
+          const d = (await db.collection('accessRequests').doc(id).get()).data();
+          if(d && d.status === 'denied'){ S.acceso = {id, status:'denied'}; beep('error'); showToast('El administrador rechazó tu solicitud','error'); }
+        }catch(e){}
+      }
+      pendientesAntes = ids;
+      actualizarHorario(); pintarBloqueo();
+    }, e => console.warn('Mis solicitudes:', e.code || e.message));
 }
 
 /* ── Solicitudes (administrador): avisos en tiempo real ── */
@@ -4308,10 +4325,22 @@ function pintarSolicitudes(){
 }
 async function responderSolicitud(id, minutos){
   const yo = limpiarNombre(PERFIL && PERFIL.name) || (S.user && S.user.email) || 'Administrador';
+  const r = (S.solicitudes || []).find(x => x.id === id) || {};
   try{
+    if(minutos > 0){
+      /* 1) El permiso va a la ficha del vendedor: lo ven todos sus dispositivos */
+      const ficha = r.perfilPath ? dbRoot.doc(r.perfilPath) : db.collection('users').doc(r.sellerId);
+      await ficha.update({permisoCobro: {approvedAt: FS.FieldValue.serverTimestamp(), minutes: minutos, reqId: id, por: yo}});
+    }
+    /* 2) Se marca la solicitud como respondida */
     await db.collection('accessRequests').doc(id).update(minutos > 0
       ? {status:'approved', minutes: minutos, approvedAt: FS.FieldValue.serverTimestamp(), resolvedBy: yo}
       : {status:'denied', resolvedAt: FS.FieldValue.serverTimestamp(), resolvedBy: yo});
+    if(minutos > 0){
+      const v = (S.allSellers || []).find(x => x.uid === r.sellerId);
+      const base = horaSegura() || Date.now();
+      if(v){ v.permisoCobro = {approvedAt: {toMillis: () => base}, minutes: minutos, reqId: id, por: yo}; renderSellers(); }
+    }
     showToast(minutos > 0 ? 'Permiso concedido por ' + (minutos >= 60 ? minutos/60 + ' h' : minutos + ' min') : 'Solicitud rechazada', minutos > 0 ? 'success' : 'info');
     if(!(S.solicitudes||[]).filter(r => r.id !== id).length) hideAccessModal();
   }catch(e){ showToast('No se pudo responder: ' + (e.code || e.message), 'error'); }
@@ -4324,6 +4353,16 @@ function openAccessModal(){
 function hideAccessModal(){ g('accessModal')?.classList.add('hidden'); }
 function pedirPermisoNotificaciones(){
   try{ Notification.requestPermission().then(p => { g('notifPermBtn').classList.add('hidden'); if(p === 'granted') showToast('Listo: también te avisaremos con notificación','success'); }); }catch(e){}
+}
+
+async function quitarPermiso(uid){
+  const ok = await confirmAction({title:'¿Quitar el permiso?', msg:'El vendedor ya no podrá cobrar fuera de su horario en ningún dispositivo.', okLabel:'Quitar permiso', icon:'🔒'});
+  if(!ok) return;
+  try{
+    await db.collection('users').doc(uid).update({permisoCobro: FS.FieldValue.delete()});
+    const v = S.allSellers.find(x => x.uid === uid); if(v) delete v.permisoCobro;
+    renderSellers(); showToast('Permiso retirado', 'success');
+  }catch(e){ showToast('No se pudo quitar: ' + (e.code || e.message), 'error'); }
 }
 
 /* ── Editor de horario (administrador) ── */
@@ -4402,11 +4441,21 @@ function iniciarHorarios(){
     /* Su horario en vivo: si el admin lo cambia, se aplica al momento */
     if(PERFIL_REF && !S.perfilUnsub){
       S.perfilUnsub = PERFIL_REF.onSnapshot(sn => {
-        if(sn.exists){ PERFIL = {uid: S.user.uid, ...sn.data()}; actualizarHorario(); }
+        if(!sn.exists) return;
+        const antes = permisoVigente(PERFIL, horaSegura());
+        PERFIL = {uid: S.user.uid, ...sn.data()};
+        const ahora = permisoVigente(PERFIL, horaSegura());
+        if(ahora && (!antes || antes.reqId !== ahora.reqId)){
+          beep('success'); hideBloqueo();
+          if(S.acceso && S.acceso.status === 'pending') S.acceso = null;
+          showToast('✅ Tienes permiso para cobrar hasta las ' + horaTexto(ahora.hasta, (PERFIL.horario||{}).tz), 'success');
+          if(requiereConteo() && !algunaVentanaAbierta()) openShiftModal({forzado:true});
+        }
+        if(antes && !PERFIL.permisoCobro) showToast('El administrador quitó tu permiso para cobrar', 'warning');
+        actualizarHorario();
       }, e => console.warn('Perfil:', e.code || e.message));
     }
-    let rid = null; try{ rid = localStorage.getItem(REQ_KEY); }catch(e){}
-    if(rid) escucharSolicitud(rid);
+    escucharMisSolicitudes();
     /* Al empezar: si está en su horario y no ha contado la caja, se le pide */
     setTimeout(async () => {
       await sincronizarReloj();
