@@ -1366,9 +1366,8 @@ function onSearchKey(e){
   if(e.key === 'Escape' && abierta){ dd.classList.add('hidden'); return; }
   if(e.key === 'Enter'){
     e.preventDefault();
-    /* ¿Fue el lector de códigos? Entonces lo atiende el lector (initHardwareScanner)
-       con el código limpio, no con lo que se haya acumulado en el buscador. */
-    if(typeof HW!=='undefined' && HW.buffer.length >= HW.MIN_LEN && Date.now() - HW.lastKeyTs < HW.MAX_GAP*2) return;
+    /* Los escaneos los atiende antes el lector (initHardwareScanner, en captura);
+       si este Enter llegó aquí es porque alguien escribió a mano. */
     if(abierta && S._ddIdx >= 0 && S._ddLista[S._ddIdx]){ selectFromDropdown(S._ddLista[S._ddIdx].barcode); return; }
     doSearch();
   }
@@ -1407,7 +1406,8 @@ async function doSearch(queryOverride){
   /* 1. Exact barcode */
   const variantes = variantesCodigo(raw);
   let match = S.products.find(p => variantes.includes(p.barcode) && p.active !== false)
-           || S.products.find(p => p.active !== false && Array.isArray(p.codigosAnteriores) && p.codigosAnteriores.some(c=>variantes.includes(c)));
+           || S.products.find(p => p.active !== false && Array.isArray(p.codigosAnteriores) && p.codigosAnteriores.some(c=>variantes.includes(c)))
+           || codigoParecido(raw);
   let exacto = !!match;   // código exacto = se agrega solo a la venta
 
   /* 1b. Código exacto de una promoción (o su clave PROMO:id) */
@@ -1461,7 +1461,12 @@ async function doSearch(queryOverride){
   /* ¿Era solo para checar el precio? Se muestra y NO se agrega (y se apaga el modo) */
   const soloPrecio = !!S.checarPrecio;
   if(soloPrecio){ S.checarPrecio = false; pintarChecarPrecio(); }
-  if(modoVenta() && exacto && !match.isBulk && !soloPrecio) agregarEscaneado(match);
+  /* Vendiendo, TODO lo que se encuentra entra directo a la venta (escaneado o
+     buscado): nunca se queda esperando «Agregar al carrito», porque si el cajero
+     pasa varios productos seguidos, el primero se perdería.
+     Solo el granel muestra la tarjeta (falta el precio de la báscula), y
+     «Checar precio» solo muestra el precio. */
+  if(modoVenta() && !match.isBulk && !soloPrecio) agregarEscaneado(match);
   else {
     showProduct(match);
     /* Granel: el cursor va directo al peso; Enter lo agrega */
@@ -1469,11 +1474,58 @@ async function doSearch(queryOverride){
   }
 }
 
+/* El lector a veces lee el mismo código con ceros de más/menos al inicio
+   (UPC 12 ↔ EAN 13 ↔ GTIN 14) o sin el último dígito (verificador).
+   Si eso apunta a UN solo producto, se toma como ese producto. */
+function codigoParecido(raw){
+  const c = String(raw||'').trim();
+  if(!/^\d{6,14}$/.test(c)) return null;
+  const sin0 = x => String(x).replace(/^0+/, '');
+  const cs = sin0(c);
+  const activos = S.products.filter(p => p.active !== false && /^\d+$/.test(p.barcode||''));
+  let hits = activos.filter(p => sin0(p.barcode) === cs);
+  if(!hits.length && cs.length >= 7) hits = activos.filter(p => { const b = sin0(p.barcode); return b.length === cs.length + 1 && b.startsWith(cs); });   // le faltó el dígito verificador
+  return hits.length === 1 ? hits[0] : null;
+}
+
+/* Teclas + y − (las del teclado numérico o las normales): suman o restan
+   una pieza del último producto escaneado. Con 1 pieza, «−» lo quita. */
+function sumarRestarUltimo(d){
+  if(S.mpCobro){ showToast('Espera a que termine el cobro con la terminal','warning'); return; }
+  const util = i => i && !i.isCredit && !i.isRecharge;
+  let it = S.cart.find(i => i.barcode === S.ultimoEscaneado && util(i))
+        || S.cart.find(i => i.barcode === S.lastAdded && util(i))
+        || [...S.cart].reverse().find(util);
+  /* «+» = escanear otra vez el último producto (revisa existencias y aplica promociones),
+     aunque sus piezas ya se hayan juntado en una promoción */
+  const ult = d > 0 && S.products.find(x => x.barcode === S.ultimoEscaneado && x.active !== false);
+  if(ult && !ult.isBulk){ agregarEscaneado(ult); return; }
+  if(!it){ showToast('Escanea un producto primero','info'); return; }
+  if(it.isBulk){ showToast('Es a granel: escanéalo de nuevo y escribe el precio de la báscula','info'); return; }
+  if(d > 0){
+    const p = !it.isPromo && S.products.find(x => x.barcode === it.barcode);
+    if(p){ agregarEscaneado(p); return; }
+    changeCartQty(it.barcode, 1);
+  } else {
+    if((Number(it.quantity)||0) <= 1){
+      removeCartItem(it.barcode);
+      showToast('Se quitó ' + it.name, 'info');
+      beep('scan');
+      return;
+    }
+    changeCartQty(it.barcode, -1);
+  }
+  S.lastAdded = it.barcode;
+  renderCart();
+  beep('add');
+}
+
 /* ¿Está la pantalla de venta activa? (con sesión, y no es el celular-escáner) */
 function modoVenta(){ return !!(S.isSeller || S.isAdmin) && !window._phoneMode; }
 
 /* Agrega 1 pieza del producto escaneado y lo resalta en la lista */
 function agregarEscaneado(p){
+  S.ultimoEscaneado = p.barcode;   // las teclas + y − suman o restan de este producto
   hide('stateProduct'); hide('stateNotFound'); hide('stateLoading');
   if(!g('receiptModal').classList.contains('hidden')) hideReceiptModal();   // nueva venta tras cobrar
   S.curProduct = p;
@@ -2195,7 +2247,12 @@ async function stopSc(instKey){
    This global listener catches that pattern from anywhere in the app
    (no need to have the search box focused) and triggers a search.
 ════════════════════════════════════ */
-const HW = { buffer:'', lastKeyTs:0, timer:null, MAX_GAP:60, MIN_LEN:3 };
+/* buffer = lo tecleado desde la última pausa larga (PAUSA ms).
+   lentos = cuántas teclas llegaron con más de MAX_GAP ms entre sí.
+   Un lector manda casi todo rapidísimo; algunos (Bluetooth, o el primer
+   escaneo después de un rato sin usarse) mandan las primeras teclas lento:
+   por eso se toleran unas cuantas teclas lentas. */
+const HW = { buffer:'', lentos:0, lastKeyTs:0, timer:null, MAX_GAP:60, PAUSA:400, MIN_LEN:3, LENTOS_OK:3 };
 /* Campos de la pantalla de venta donde el lector SÍ cuenta como escaneo
    (si el cursor quedó en la cantidad o en el monto, el escaneo agrega el
    producto y esos dígitos se borran de ese campo). */
@@ -2218,8 +2275,16 @@ function initHardwareScanner(){
     HW.lastKeyTs = now;
 
     if(e.key === 'Enter'){
-      if(HW.buffer.length >= HW.MIN_LEN){
-        const code = HW.buffer;
+      /* ¿Fue el lector? Casi todo rápido y sin pausas largas.
+         En cantidad / monto se exige más (6+ caracteres) para no confundir
+         con un cajero que escribe «100» y da Enter. */
+      const enCampoNum = act && act.id && act.id !== 'searchInput' && CAMPOS_ESCANEO.includes(act.id);
+      const minLen = enCampoNum ? 6 : HW.MIN_LEN;
+      const rapidas = Math.max(0, HW.buffer.length - 1 - HW.lentos);   // teclas que llegaron pegaditas
+      const esLector = HW.buffer.length >= minLen && gap < HW.PAUSA
+        && HW.lentos <= (enCampoNum ? 1 : HW.LENTOS_OK) && rapidas >= Math.max(2, HW.lentos * 2);
+      if(esLector){
+        const code = HW.buffer.trim().replace(/^[+\-]+/, '');   // por si justo antes presionaron + o −
         resetHwBuffer();
         flashHwBadge();
         e.preventDefault();
@@ -2251,15 +2316,15 @@ function initHardwareScanner(){
       return;
     }
     if((e.key||'').length === 1){
-      // Human typing is usually >80ms between keys; scanners are typically <30ms.
-      if(gap > HW.MAX_GAP && HW.buffer.length > 0){
-        // Too slow — likely human typing, restart buffer instead of treating as scan
-        HW.buffer = e.key;
+      if(gap > HW.PAUSA || !HW.buffer){
+        HW.buffer = e.key; HW.lentos = 0;          // empieza una lectura nueva
+      } else if(gap > HW.MAX_GAP){
+        HW.buffer += e.key; HW.lentos++;           // tecla lenta (humano, o lector "despertando")
       } else {
-        HW.buffer += e.key;
+        HW.buffer += e.key;                        // tecla rápida: lector
       }
       clearTimeout(HW.timer);
-      HW.timer = setTimeout(resetHwBuffer, 400);
+      HW.timer = setTimeout(resetHwBuffer, HW.PAUSA + 100);
     }
   }, true);
 }
@@ -2294,7 +2359,7 @@ function pintarChecarPrecio(){
   const si = g('searchInput');
   if(si) si.placeholder = on ? '🔎 Escanea o busca el producto para ver su precio…' : 'Buscar producto, promoción o código… (F10)';
 }
-function resetHwBuffer(){ HW.buffer=''; }
+function resetHwBuffer(){ HW.buffer=''; HW.lentos=0; }
 function flashHwBadge(){
   const b=g('hwScanBadge'); if(!b) return;
   b.classList.remove('hidden');
@@ -2931,7 +2996,7 @@ function pintarCajonUI(){
   const b = g('btnCajon');
   if(b){ b.classList.toggle('hidden', c.modo==='off'); b.classList.toggle('flex', c.modo!=='off'); }
   const h = g('atajosCaja');
-  if(h) h.textContent = 'F1/F10 buscar · F7 checar precio · F4 efectivo · F2 tarjeta · F3 mixto · Enter confirma' + (c.modo!=='off' ? ' · F9 cajón' : '');
+  if(h) h.textContent = '+/− cantidad · F1/F10 buscar · F7 checar precio · F4 efectivo · F2 tarjeta · F3 mixto · Enter confirma' + (c.modo!=='off' ? ' · F9 cajón' : '');
 }
 if(serialSupported()){
   navigator.serial.addEventListener('disconnect', e=>{
@@ -6642,6 +6707,18 @@ document.addEventListener('keydown',e=>{
     if(typeof cerrarVentasTurno==='function'){ cerrarDevolucion(); cerrarVentasTurno(); }
     if(!g('confirmModal').classList.contains('hidden')) _confirmResolve(false);
     closeMobileCart();
+  }
+  /* + / − : sumar o restar del último producto (si no se está escribiendo algo) */
+  if(modoVenta() && (e.key==='+' || e.key==='-') && !e.ctrlKey && !e.altKey && !e.metaKey){
+    const act = document.activeElement;
+    const libre = !act || act===document.body || act.tagName==='BUTTON'
+               || (act.id==='searchInput' && !String(act.value||'').trim());
+    const ventana = [...document.querySelectorAll('[id$="Modal"]')].some(m=>!m.classList.contains('hidden'));
+    if(libre && !ventana && g('adminPanel').classList.contains('hidden') && S.cart.length){
+      e.preventDefault();
+      sumarRestarUltimo(e.key==='+' ? 1 : -1);
+      return;
+    }
   }
   /* Atajos de caja: F4 efectivo · F2 tarjeta · F3 mixto · F1 buscar · F8 vaciar.
      Funcionan aunque el cursor esté en el buscador (las F no escriben nada). */
