@@ -2769,6 +2769,7 @@ async function showPaymentModal(metodo){
   g('payTotal').textContent = fmt(total);
   g('cashInput').value=''; g('changeDisplay').textContent='$0.00';
   g('mixedCashInput').value=''; g('mixedCardInput').value=''; g('mixedStatus').textContent='';
+  S.tipoTarjeta = 'tarjeta';   // cada cobro empieza en débito/crédito; el cajero cambia a Vales si aplica
   S.payMethod=metodo; selectPayMethod(metodo);
   /* Quick amounts buttons */
   const quicks=[total,Math.ceil(total/10)*10,Math.ceil(total/50)*50,Math.ceil(total/100)*100];
@@ -2794,24 +2795,53 @@ function hidePayModal(){ g('payModal').classList.add('hidden'); }
 function setQuick(v){ g('cashInput').value=v; calcChange(); }
 
 /* ── Comisión que se le suma al cliente al pagar con tarjeta ──
-   La define el dueño en Hardware → «Terminal Mercado Pago de esta caja».
-   Se guarda por caja (este navegador) y por negocio. Sin configurar = 4 %,
-   como antes. 0 = no se cobra comisión. */
+   Dos porcentajes que define el dueño en Hardware → «Terminal Mercado Pago
+   de esta caja»: uno para débito/crédito y otro para tarjetas de vales.
+   Al cobrar, el cajero elige cuál es. Se guardan por caja y por negocio.
+   Sin configurar: débito/crédito 4 % (como antes) y vales 6 %. 0 = sin comisión. */
 const COMISION_TARJETA_DEFAULT = 4;
+const COMISION_VALES_DEFAULT = 6;
 const COMISION_TARJETA_MAX = 15;
 const comisionTarjetaKey = () => 'posComisionTarjeta_v1:' + (TENANT || '');
-function comisionTarjetaPct(){
+const comisionValesKey   = () => 'posComisionVales_v1:'   + (TENANT || '');
+function leerPct(key, porDefecto){
   try{
-    const v = localStorage.getItem(comisionTarjetaKey());
+    const v = localStorage.getItem(key);
     if(v !== null && v !== '' && isFinite(+v)) return Math.min(COMISION_TARJETA_MAX, Math.max(0, +v));
   }catch(e){}
-  return COMISION_TARJETA_DEFAULT;
+  return porDefecto;
 }
+function comisionTarjetaPct(){ return leerPct(comisionTarjetaKey(), COMISION_TARJETA_DEFAULT); }
+function comisionValesPct(){   return leerPct(comisionValesKey(),   COMISION_VALES_DEFAULT); }
 const redondear2 = n => Math.round((Number(n) || 0) * 100) / 100;
+
+/* ¿Se ofrece elegir Débito/crédito o Vales? Solo con el módulo de terminal,
+   que es donde el dueño configura los dos porcentajes. */
+const hayTiposDeTarjeta = () => typeof mpModuloActivo === 'function' && mpModuloActivo();
+S.tipoTarjeta = 'tarjeta';   // 'tarjeta' | 'vales' — se reinicia en cada cobro
+function comisionActualPct(){
+  return (hayTiposDeTarjeta() && S.tipoTarjeta === 'vales') ? comisionValesPct() : comisionTarjetaPct();
+}
+function selectTipoTarjeta(t){
+  S.tipoTarjeta = t === 'vales' ? 'vales' : 'tarjeta';
+  if(S.payMethod === 'mixed') calcMixed(); else recalcTotalConComision();
+}
+function pintarTipoTarjeta(){
+  const area = g('cardTypeArea'); if(!area) return;
+  const ver = hayTiposDeTarjeta() && (S.payMethod === 'card' || S.payMethod === 'mixed');
+  area.classList.toggle('hidden', !ver);
+  if(!ver) return;
+  const on  = 'flex-1 border-2 border-blue-500 bg-blue-50 text-blue-700 py-2 rounded-xl font-semibold text-xs sm:text-sm min-h-[48px]';
+  const off = 'flex-1 border-2 border-slate-200 bg-slate-50 text-slate-500 py-2 rounded-xl font-semibold text-xs sm:text-sm min-h-[48px]';
+  g('tipoBtnTarjeta').className = S.tipoTarjeta === 'vales' ? off : on;
+  g('tipoBtnVales').className   = S.tipoTarjeta === 'vales' ? on : off;
+  g('tipoPctTarjeta').textContent = comisionTarjetaPct() + '%';
+  g('tipoPctVales').textContent   = comisionValesPct() + '%';
+}
 
 function recalcTotalConComision() {
   const {total} = cartTotals();
-  const pct = comisionTarjetaPct();
+  const pct = comisionActualPct();
   let fee = 0;
   if (S.payMethod === 'card') {
     fee = redondear2(total * pct / 100);
@@ -2820,7 +2850,9 @@ function recalcTotalConComision() {
     fee = redondear2(cardAmt * pct / 100);
   }
   const grandTotal = redondear2(total + fee);
+  pintarTipoTarjeta();
   if(g('payFeePct')) g('payFeePct').textContent = String(pct);
+  if(g('payFeeTipo')) g('payFeeTipo').textContent = (hayTiposDeTarjeta() && S.tipoTarjeta === 'vales') ? 'vales' : 'tarjeta';
   g('payFeeRow').classList.toggle('hidden', fee === 0);
   g('payFeeAmt').textContent = '+' + fmt(fee);
   g('payTotal').textContent = fmt(grandTotal);
@@ -2880,7 +2912,7 @@ async function processPayment(){
      el cliente pagaba (otra caja vendió lo mismo, llegó un snapshot…) */
   if(cartStockProblems().length){ hidePayModal(); await ensureCartStock(); return; }
   const {subtotal, discountAmt} = cartTotals();
-  const {grandTotal} = recalcTotalConComision();
+  const {grandTotal, fee} = recalcTotalConComision();
   let paid = grandTotal, cashPortion=0, cardPortion=0;
 
   if(S.payMethod==='cash'){
@@ -2901,7 +2933,11 @@ async function processPayment(){
     total: grandTotal, paid, cashPortion, cardPortion,
     payMethod: S.payMethod,
     cart: S.cart.map(i=>({...i})),
-    discount: S.discount ? {...S.discount} : null
+    discount: S.discount ? {...S.discount} : null,
+    /* Comisión cobrada por pagar con tarjeta (sale en el ticket y en el historial) */
+    comision: fee || 0,
+    comisionPct: fee ? comisionActualPct() : 0,
+    tipoTarjeta: cardPortion > 0 ? ((hayTiposDeTarjeta() && S.tipoTarjeta === 'vales') ? 'vales' : 'tarjeta') : null
   };
 
   /* ── Mercado Pago Point: la parte con tarjeta se cobra en la terminal física ── */
@@ -2953,6 +2989,8 @@ async function finalizarVenta(pago, opts={}){
       voided:false,
       createdOffline: !isOnline(),
       ...(pago.mp ? {mp: pago.mp} : {}),   // ids de Mercado Pago para conciliar y devolver
+      ...(pago.tipoTarjeta ? {tipoTarjeta: pago.tipoTarjeta} : {}),
+      ...(pago.comision ? {comision: pago.comision, comisionPct: pago.comisionPct} : {}),
     };
 
     /* La venta se guarda SIEMPRE en el dispositivo primero: así el cobro
@@ -3056,9 +3094,11 @@ function ticketLines(sale){
   const nArt = (sale.items||[]).reduce((n,it)=>n + (it.isBulk ? 1 : (Number(it.quantity)||0)), 0);
   L.push({t:'row', k:'sub', l:`Subtotal (${nArt} art.)`, r:fmt(sale.subtotal)});
   if(sale.discountAmt) L.push({t:'row', k:'sub', l:'Descuento', r:'-'+fmt(sale.discountAmt)});
+  if(sale.comision) L.push({t:'row', k:'sub',
+    l:`Comisión ${sale.tipoTarjeta==='vales'?'vales':'tarjeta'} (${sale.comisionPct}%)`, r:'+'+fmt(sale.comision)});
   L.push({t:'row', k:'total', l:'TOTAL', r:fmt(sale.total)});
   if(sale.payMethod){
-    L.push({t:'row', k:'pay', l:'Pago', r:METODO_TICKET[sale.payMethod]||''});
+    L.push({t:'row', k:'pay', l:'Pago', r:sale.tipoTarjeta==='vales' && sale.payMethod==='card' ? 'Vales' : (METODO_TICKET[sale.payMethod]||'')});
     if(sale.payMethod==='cash'){
       L.push({t:'row', k:'pay', l:'Recibido', r:fmt(sale.amountPaid||sale.total)});
       L.push({t:'row', k:'pay', l:'Cambio', r:fmt(sale.change||0)});

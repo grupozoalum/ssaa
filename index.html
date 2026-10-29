@@ -1277,7 +1277,7 @@
       <span id="payTotal" class="font-black text-2xl text-indigo-700"></span>
     </div>
     <div id="payFeeRow" class="hidden flex justify-between items-center mb-4 text-sm text-blue-600 bg-blue-50 px-3 py-2 rounded-lg border border-blue-100">
-      <span class="font-semibold"><i class="fa-solid fa-credit-card mr-1"></i>Comisión tarjeta (<span id="payFeePct">4</span>%)</span>
+      <span class="font-semibold"><i class="fa-solid fa-credit-card mr-1"></i>Comisión <span id="payFeeTipo">tarjeta</span> (<span id="payFeePct">4</span>%)</span>
       <span id="payFeeAmt" class="font-black">+$0.00</span>
     </div>
     <!-- Method -->
@@ -1294,6 +1294,18 @@
         class="relative border-2 border-slate-200 bg-slate-50 text-slate-500 py-2.5 rounded-xl font-semibold text-xs sm:text-sm min-h-[58px]">
         <i class="fa-solid fa-layer-group text-lg block mb-0.5"></i>Mixto
        <span class="kbd-key kbd-light ml-0.5">F3</span></button>
+    </div>
+    <!-- Tipo de tarjeta (solo con terminal Mercado Pago): cada uno con su comisión -->
+    <div id="cardTypeArea" class="hidden mb-4">
+      <p class="text-xs text-slate-500 mb-1.5">¿Con qué tarjeta paga?</p>
+      <div class="flex gap-2">
+        <button id="tipoBtnTarjeta" type="button" onclick="selectTipoTarjeta('tarjeta')" class="flex-1 border-2 border-blue-500 bg-blue-50 text-blue-700 py-2 rounded-xl font-semibold text-xs sm:text-sm min-h-[48px]">
+          <i class="fa-solid fa-credit-card mr-1"></i>Débito / crédito <span id="tipoPctTarjeta" class="block text-[11px] font-bold opacity-80"></span>
+        </button>
+        <button id="tipoBtnVales" type="button" onclick="selectTipoTarjeta('vales')" class="flex-1 border-2 border-slate-200 bg-slate-50 text-slate-500 py-2 rounded-xl font-semibold text-xs sm:text-sm min-h-[48px]">
+          <i class="fa-solid fa-ticket mr-1"></i>Vales <span id="tipoPctVales" class="block text-[11px] font-bold opacity-80"></span>
+        </button>
+      </div>
     </div>
     <!-- Cash input -->
     <div id="cashArea" class="mb-4">
@@ -2036,12 +2048,26 @@
           class="w-full border border-slate-200 rounded-lg px-3 py-2.5 text-sm font-mono bg-white focus:outline-none focus:ring-2 focus:ring-sky-400 min-h-[44px]">
         <p class="text-[10px] text-slate-400 leading-snug">Formato <b>MODELO__NÚMERO DE SERIE</b>. Solo se guarda en esta computadora: cada caja tiene su propia terminal y los cobros no se cruzan.</p>
         <div>
-          <label for="mp_comision" class="text-xs font-semibold text-slate-600">Comisión por pago con tarjeta (%)</label>
-          <div class="relative mt-1">
-            <input id="mp_comision" type="number" inputmode="decimal" min="0" max="15" step="0.1" placeholder="0"
-              onkeydown="if(event.key==='Enter'){event.preventDefault();guardarTerminalMP();}"
-              class="w-full border border-slate-200 rounded-lg pl-3 pr-9 py-2.5 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-sky-400 min-h-[44px]">
-            <span class="absolute right-3 top-1/2 -translate-y-1/2 text-sm text-slate-400 pointer-events-none">%</span>
+          <p class="text-xs font-semibold text-slate-600">Comisión por pago con tarjeta</p>
+          <div class="grid grid-cols-2 gap-2 mt-1">
+            <label class="block">
+              <span class="text-[11px] text-slate-500">Débito / crédito</span>
+              <span class="relative block">
+                <input id="mp_comision" type="number" inputmode="decimal" min="0" max="15" step="0.1" placeholder="0"
+                  onkeydown="if(event.key==='Enter'){event.preventDefault();guardarTerminalMP();}"
+                  class="w-full border border-slate-200 rounded-lg pl-3 pr-8 py-2.5 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-sky-400 min-h-[44px]">
+                <span class="absolute right-3 top-1/2 -translate-y-1/2 text-sm text-slate-400 pointer-events-none">%</span>
+              </span>
+            </label>
+            <label class="block">
+              <span class="text-[11px] text-slate-500">Vales</span>
+              <span class="relative block">
+                <input id="mp_comisionVales" type="number" inputmode="decimal" min="0" max="15" step="0.1" placeholder="0"
+                  onkeydown="if(event.key==='Enter'){event.preventDefault();guardarTerminalMP();}"
+                  class="w-full border border-slate-200 rounded-lg pl-3 pr-8 py-2.5 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-sky-400 min-h-[44px]">
+                <span class="absolute right-3 top-1/2 -translate-y-1/2 text-sm text-slate-400 pointer-events-none">%</span>
+              </span>
+            </label>
           </div>
           <p id="mp_comisionHint" class="text-[10px] text-slate-400 leading-snug mt-1"></p>
         </div>
@@ -2267,7 +2293,7 @@
 <!-- ▌TICKET PARA IMPRIMIR ▐ — solo se ve al imprimir desde el navegador -->
 <div id="ticketPrint" aria-hidden="true"></div>
 
-<script src="app.js?v=20261028c"></script>
-<script src="mp-point.js?v=20261028c"></script>
+<script src="app.js?v=20261028d"></script>
+<script src="mp-point.js?v=20261028d"></script>
 </body>
 </html>
