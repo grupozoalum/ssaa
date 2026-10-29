@@ -69,6 +69,16 @@ function codigoSeguro(code){
   return c.slice(0, 200);
 }
 
+/* Si al producto le cambiaron el código, el viejo queda en codigosAnteriores:
+   ventas viejas, devoluciones, anulaciones y etiquetas viejas siguen apuntando bien. */
+function codigoActual(code){
+  const c = String(code ?? '');
+  const lista = (typeof S!=='undefined' && S.productsRaw) ? S.productsRaw : [];
+  if(!c || lista.some(p=>p.barcode===c)) return c;
+  const p = lista.find(p=>Array.isArray(p.codigosAnteriores) && p.codigosAnteriores.includes(c));
+  return p ? p.barcode : c;
+}
+
 function variantesCodigo(code){
   const c = String(code||'').trim();
   const v = [c];
@@ -391,7 +401,7 @@ function contenidoPromo(pr){
    Devuelve [{barcode, qty}] sumando lo repetido (suelto + dentro de promos). */
 function deltasDeItems(items){
   const m = {};
-  const sumar = (b, q) => { if(b) m[b] = round3((m[b]||0) + q); };
+  const sumar = (b, q) => { b = codigoActual(b); if(b) m[b] = round3((m[b]||0) + q); };
   (items||[]).forEach(i=>{
     if(!i || i.isRecharge) return;
     /* Devolución / cambio: lo devuelto REGRESA al inventario (cantidad negativa),
@@ -406,10 +416,10 @@ function deltasDeItems(items){
       return;
     }
     if(i.isPromo){
-      (i.items||[]).forEach(c=>{ if(c.barcode) m[c.barcode] = round3((m[c.barcode]||0) + (Number(c.qty)||0)*(Number(i.quantity)||0)); });
+      (i.items||[]).forEach(c=>sumar(c.barcode, (Number(c.qty)||0)*(Number(i.quantity)||0)));
       return;
     }
-    if(i.barcode) m[i.barcode] = round3((m[i.barcode]||0) + (Number(i.quantity)||0));
+    sumar(i.barcode, Number(i.quantity)||0);
   });
   return Object.entries(m).filter(([,q])=>q!==0).map(([barcode,qty])=>({barcode, qty}));
 }
@@ -1217,28 +1227,99 @@ function restoreLocalCart() {
 /* ════════════════════════════════════
    SEARCH — uses local cache, no index needed
 ════════════════════════════════════ */
+/* ════════════════════════════════════
+   BÚSQUEDA INTELIGENTE
+   - Sin acentos, sin mayúsculas, sin signos y sin espacios dobles:
+     «Coca-Cola», «coca  cola» y «COCA COLA» son lo mismo.
+   - Palabras en cualquier orden: «2l coca» encuentra «Coca Cola 2L».
+   - Pegado o separado: «cocacola» encuentra «coca cola» (y al revés).
+   - Busca en nombre, código, departamento y marca.
+   - Ordena: código exacto, luego lo que EMPIEZA igual, nombres cortos
+     y lo que más se vende.
+════════════════════════════════════ */
+const normBusq = t => sinAcentos(t).replace(/[^a-z0-9.]+/g, ' ').replace(/\s+/g, ' ').trim();
+const _claveBusq = new WeakMap();
+function claveBusqueda(p){
+  let k = _claveBusq.get(p);
+  if(!k){
+    const name = normBusq(p.name);
+    const key  = normBusq([p.name, p.isPromo ? p.code : p.barcode, p.category, p.marca, p.isPromo ? contenidoPromo(p) : ''].filter(Boolean).join(' '));
+    k = { name, key, compact: key.replace(/ /g, ''), code: normBusq(p.isPromo ? (p.code||'') : p.barcode).replace(/ /g, '') };
+    _claveBusq.set(p, k);
+  }
+  return k;
+}
+function puntajeBusqueda(p, qn, tokens, qc){
+  const k = claveBusqueda(p);
+  if(k.code && k.code === qc) return 1000;                       // código exacto
+  let s;
+  if(tokens.every(t => k.key.includes(t))) s = 100;              // todas las palabras, en cualquier orden
+  else if(qc.length >= 3 && k.compact.includes(qc)) s = 80;      // «cocacola» ↔ «coca cola»
+  else return 0;
+  if(k.name.startsWith(qn)) s += 50;                             // empieza igual
+  else if((' ' + k.name).includes(' ' + tokens[0])) s += 20;     // la 1a palabra inicia una palabra del nombre
+  s += tokens.filter(t => (' ' + k.key).includes(' ' + t)).length * 5;
+  s += tokens.filter(t => k.name.includes(t)).length * 12;       // lo escrito está en el NOMBRE (no solo en el departamento)
+  if(qc.length >= 3 && k.name.replace(/ /g, '').includes(qc)) s += 15;
+  if(k.code && k.code.startsWith(qc)) s += 30;
+  if(p.isPromo) s += 15;
+  s -= Math.min(20, k.name.length / 5);                          // nombres cortos primero
+  s += Math.min(10, Math.log10(1 + (Number(p.salesCount)||0)) * 4);
+  return s;
+}
+/* Lista ordenada de productos (y promos) que coinciden con lo escrito */
+function buscarProductos(q, opts = {}){
+  const { limite = 40, incluirPromos = true, incluirInactivos = false, lista = null } = opts;
+  const qn = normBusq(q); if(!qn) return [];
+  const tokens = qn.split(' '), qc = qn.replace(/ /g, '');
+  const base = lista || [...(incluirPromos ? promosActivas() : []), ...S.products.filter(p => incluirInactivos || p.active !== false)];
+  const out = [];
+  for(const p of base){ const sc = puntajeBusqueda(p, qn, tokens, qc); if(sc > 0) out.push([p, sc]); }
+  out.sort((a, b) => b[1] - a[1]);
+  return out.slice(0, limite).map(x => x[0]);
+}
+
 function handleSearchInput(q) {
   const dd = g('searchDropdown');
-  if(!q) { dd.classList.add('hidden'); return; }
-  q = sinAcentos(q);
-  /* Promociones primero (máx. 4), luego productos */
-  const promos = promosActivas().filter(p => sinAcentos(p.name).includes(q) || sinAcentos(p.code).includes(q)
-                                         || (q.length>=3 && sinAcentos(contenidoPromo(p)).includes(q))).slice(0, 4);
-  const prods = S.products.filter(p => p.active !== false && (sinAcentos(p.name).includes(q) || sinAcentos(p.barcode).includes(q)));
-  const matches = [...promos, ...prods].slice(0, 8);
-  if(!matches.length) { dd.classList.add('hidden'); return; }
-  dd.innerHTML = matches.map(p => `
-    <div onclick="selectFromDropdown('${esc(p.barcode)}')" class="p-3 ${p.isPromo?'bg-amber-50/60 hover:bg-amber-50':'hover:bg-slate-50'} cursor-pointer flex justify-between items-center transition">
+  S._ddIdx = -1;
+  if(!q || !q.trim()) { dd.classList.add('hidden'); S._ddLista = []; return; }
+  const matches = buscarProductos(q, { limite: 41 });
+  const mas = matches.length > 40;
+  S._ddLista = matches.slice(0, 40);
+  if(!S._ddLista.length) { dd.classList.add('hidden'); return; }
+  dd.innerHTML = S._ddLista.map((p, i) => `
+    <div data-i="${i}" onclick="selectFromDropdown('${esc(p.barcode)}')" class="dd-item p-3 ${p.isPromo?'bg-amber-50/60 hover:bg-amber-50':'hover:bg-slate-50'} cursor-pointer flex justify-between items-center transition">
       <div class="min-w-0 flex-1">
         <p class="text-sm font-semibold text-slate-800 truncate">${p.isPromo?'<span class="inline-block bg-amber-400 text-white text-[9px] font-black px-1.5 py-0.5 rounded mr-1 align-middle">PROMO</span>':''}${esc(p.name)}</p>
-        <p class="text-[10px] text-slate-400 truncate">${p.isPromo ? esc(contenidoPromo(p)) + (p.code?' · '+esc(p.code):'') : esc(p.barcode)}</p>
+        <p class="text-[10px] text-slate-400 truncate">${p.isPromo ? esc(contenidoPromo(p)) + (p.code?' · '+esc(p.code):'') : esc(p.barcode) + (p.category ? ' · ' + esc(p.category) : '')}</p>
       </div>
       <div class="text-right shrink-0 ml-2">
-        <span class="text-sm font-black text-indigo-600 block">${fmt(p.price)}</span>
+        <span class="text-sm font-black text-indigo-600 block">${fmt(p.price)}${p.isBulk?'<span class="text-[10px] font-semibold">/kg</span>':''}</span>
         ${stockOf(p)!==null && stockOf(p)<=0 ? '<span class="text-[10px] font-bold text-red-500">Agotado</span>' : ''}
       </div>
-    </div>`).join('');
+    </div>`).join('')
+    + (mas ? '<p class="px-3 py-2 text-[11px] text-slate-400 text-center bg-slate-50">Hay más resultados: escribe otra palabra para afinar (ej. el tamaño)</p>' : '');
   dd.classList.remove('hidden');
+}
+/* Flechas ↑ ↓ para moverse en la lista y Enter para elegir */
+function onSearchKey(e){
+  const dd = g('searchDropdown');
+  const abierta = dd && !dd.classList.contains('hidden') && (S._ddLista||[]).length;
+  if(abierta && (e.key === 'ArrowDown' || e.key === 'ArrowUp')){
+    e.preventDefault();
+    const n = S._ddLista.length;
+    S._ddIdx = e.key === 'ArrowDown' ? ((S._ddIdx ?? -1) + 1) % n : ((S._ddIdx ?? 0) - 1 + n) % n;
+    dd.querySelectorAll('.dd-item').forEach(el => el.classList.toggle('ring-2', Number(el.dataset.i) === S._ddIdx));
+    dd.querySelectorAll('.dd-item').forEach(el => el.classList.toggle('ring-indigo-400', Number(el.dataset.i) === S._ddIdx));
+    dd.querySelector(`.dd-item[data-i="${S._ddIdx}"]`)?.scrollIntoView({ block: 'nearest' });
+    return;
+  }
+  if(e.key === 'Escape' && abierta){ dd.classList.add('hidden'); return; }
+  if(e.key === 'Enter'){
+    e.preventDefault();
+    if(abierta && S._ddIdx >= 0 && S._ddLista[S._ddIdx]){ selectFromDropdown(S._ddLista[S._ddIdx].barcode); return; }
+    doSearch();
+  }
 }
 function selectFromDropdown(barcode) {
   g('searchDropdown').classList.add('hidden');
@@ -1272,7 +1353,8 @@ async function doSearch(queryOverride){
 
   /* 1. Exact barcode */
   const variantes = variantesCodigo(raw);
-  let match = S.products.find(p => variantes.includes(p.barcode) && p.active !== false);
+  let match = S.products.find(p => variantes.includes(p.barcode) && p.active !== false)
+           || S.products.find(p => p.active !== false && Array.isArray(p.codigosAnteriores) && p.codigosAnteriores.some(c=>variantes.includes(c)));
   let exacto = !!match;   // código exacto = se agrega solo a la venta
 
   /* 1b. Código exacto de una promoción (o su clave PROMO:id) */
@@ -1281,18 +1363,19 @@ async function doSearch(queryOverride){
     exacto = !!match;
   }
 
-  /* 2. Barcode partial / name includes (sin importar mayúsculas ni acentos) */
+  /* 2. Por nombre (búsqueda inteligente). Si hay varios, se muestra la lista
+        para que el cajero elija, en vez de adivinar con el primero. */
   if(!match){
-    const qn = sinAcentos(q);
-    match = S.products.find(p => p.active !== false && (
-      sinAcentos(p.barcode) === qn ||
-      sinAcentos(p.name).includes(qn)
-    ));
-  }
-  /* 2b. Nombre de una promoción */
-  if(!match){
-    const qn = sinAcentos(q);
-    match = promosActivas().find(p => sinAcentos(p.name).includes(qn)) || null;
+    const res = buscarProductos(raw, { limite: 2 });
+    if(res.length === 1) match = res[0];
+    else if(res.length > 1 && !window._phoneMode){
+      g('searchInput').value = raw;
+      handleSearchInput(raw);
+      S._ddIdx = 0;
+      g('searchDropdown').querySelector('.dd-item[data-i="0"]')?.classList.add('ring-2','ring-indigo-400');
+      show('stateWelcome');
+      return;
+    } else if(res.length) match = res[0];
   }
 
   /* 3. If still not found, try direct Firestore lookup (catches barcode not yet in cache) */
@@ -4141,8 +4224,8 @@ function stockBadge(p){
 function filterProdTable(){
   g('pvMineCount').textContent = S.products.length ? '('+S.products.length+')' : '';
   if(S.prodView==='catalog' && CAT.docs) renderCatalogRows(CAT.docs);   // refresca "En tu tienda"
-  const q=g('prodFilter').value.toLowerCase();
-  let list=S.products.filter(p=>(p.name||'').toLowerCase().includes(q)||(p.barcode||'').toLowerCase().includes(q));
+  const q=g('prodFilter').value.trim();
+  let list = q ? buscarProductos(q, { limite: Infinity, incluirPromos: false, incluirInactivos: true }) : S.products;
   if(S.lowStockOnly) list=list.filter(p=>typeof p.stock==='number' && p.stock<=LOW_STOCK_THRESHOLD);
   const tbody=g('prodTableBody');
   if(!list.length){
@@ -4334,6 +4417,7 @@ function showProductModal(fromScan=false){
   g('productModalTitle').textContent='Agregar Producto';
   g('pf_barcode').value=fromScan&&window._pendingBarcode?window._pendingBarcode:'';
   g('pf_barcode').readOnly=false;
+  if(g('pf_barcodeHint')) g('pf_barcodeHint').textContent='Dejar vacío para auto-generar';
   g('pf_name').value=''; g('pf_price').value=''; g('pf_stock').value=''; g('pf_category').value='General'; g('pf_favorite').checked=false; g('pf_isBulk').checked=false;
   g('pf_cost').value=''; g('pf_costRow').classList.toggle('hidden', !S.isAdmin); updateMarginHint();
   S.editingBarcode=null;
@@ -4345,7 +4429,8 @@ function editProduct(barcode){
   const p=S.products.find(x=>x.barcode===barcode); if(!p) return;
   refreshCategoryList();
   g('productModalTitle').textContent='Editar Producto';
-  g('pf_barcode').value=p.barcode; g('pf_barcode').readOnly=true;
+  g('pf_barcode').value=p.barcode; g('pf_barcode').readOnly=false;   // se puede cambiar (ver cambiarCodigoProducto)
+  if(g('pf_barcodeHint')) g('pf_barcodeHint').textContent='Puedes cambiarlo: se conservan existencias y ventas';
   g('pf_name').value=p.name; g('pf_price').value=p.price; g('pf_stock').value=p.stock??''; g('pf_category').value=p.category||'General';
   g('pf_favorite').checked=!!p.favorite;
   g('pf_isBulk').checked=!!p.isBulk;
@@ -4369,6 +4454,8 @@ async function saveProduct(){
   if(!name){showToast('El nombre es requerido','error');return;}
   if(isNaN(price)||price<0){showToast('El precio no es válido','error');return;}
   
+  /* Editando y dejaron el código vacío: se queda el que tenía */
+  if(!barcode && S.editingBarcode) barcode = S.editingBarcode;
   // Si no tiene código de barras, generamos uno corto interno (Ej: GR-4521)
   if(!barcode && !S.editingBarcode) {
     barcode = 'GR-' + Math.floor(1000 + Math.random() * 9000); 
@@ -4399,6 +4486,11 @@ async function saveProduct(){
     data.cost = isNaN(cost)?0:cost;
     if(!isNaN(cost) && cost>price) showToast('Ojo: el costo es mayor que el precio de venta','warning');
   }
+  /* ¿Le cambiaron el código de barras a un producto existente? */
+  if(S.editingBarcode && barcode && barcode !== S.editingBarcode){
+    await cambiarCodigoProducto(S.editingBarcode, barcode, data);
+    return;
+  }
   try{
     if(!S.editingBarcode) data.createdAt=FS.FieldValue.serverTimestamp(); 
     await db.collection('products').doc(barcode).set(data,{merge:true});
@@ -4406,6 +4498,69 @@ async function saveProduct(){
     showToast('Producto '+(S.editingBarcode?'actualizado':'agregado')+' ✅','success');
   }catch(e){console.error(e);showToast('Error: '+e.message,'error');}
 }
+/* ── Cambiar el código de barras de un producto ──
+   En Firestore el código ES el nombre del documento, así que no se puede
+   "renombrar": se copia todo (stock, lotes, ventas, costo…) a un documento
+   con el código nuevo y se borra el viejo, en una sola transacción.
+   El código viejo queda guardado en codigosAnteriores para que las ventas
+   anteriores, devoluciones, anulaciones y etiquetas viejas sigan funcionando. */
+async function cambiarCodigoProducto(viejo, nuevoRaw, cambios){
+  const nuevo = codigoSeguro(nuevoRaw);
+  if(!nuevo){ showToast('El código nuevo no es válido','error'); return; }
+  if(nuevo !== nuevoRaw){ g('pf_barcode').value = nuevo; showToast(`El código no puede llevar «/»: quedaría como «${nuevo}»`,'warning'); }
+  if(!isOnline()){ showToast('Para cambiar un código de barras necesitas internet','error'); return; }
+  const otro = S.productsRaw.find(p=>p.barcode===nuevo);
+  if(otro){ showToast(`El código ${nuevo} ya es de «${otro.name}». Usa otro código.`,'error'); beep('error'); return; }
+  if(typeof promosActivas==='function' && (S.promos||[]).some(pr=>pr.code && sinAcentos(pr.code)===sinAcentos(nuevo))){
+    showToast(`El código ${nuevo} ya lo usa una promoción.`,'error'); return;
+  }
+  /* Ventas o entradas de este producto que aún no se suben: primero que se suban */
+  const pendiente = loadOutbox().some(it => !it.sideDone && (
+    (it.stockDeltas||[]).some(d=>d.barcode===viejo) || it.payload?.productBarcode===viejo));
+  if(pendiente){ showToast('Hay ventas o entradas de este producto sin subir. Espera a que se sincronicen e intenta de nuevo.','warning'); flushOutbox(); return; }
+
+  const ok = await confirmAction({ title:'¿Cambiar el código de barras?',
+    msg:`De «${viejo}» a «${nuevo}».
+
+Se conservan existencias, costo, lotes y ventas. Las promociones que lo usan se actualizan solas. Si alguien escanea el código viejo, también lo encuentra.`,
+    okLabel:'Cambiar código', icon:'🏷️' });
+  if(!ok) return;
+
+  const refViejo = db.collection('products').doc(viejo);
+  const refNuevo = db.collection('products').doc(nuevo);
+  try{
+    await withTimeout(dbRoot.runTransaction(async tx=>{
+      const [sv, sn] = await Promise.all([tx.get(refViejo), tx.get(refNuevo)]);
+      if(!sv.exists) throw new Error('El producto ya no existe (¿lo borraron en otra caja?)');
+      if(sn.exists) throw new Error(`El código ${nuevo} ya está ocupado por otro producto`);
+      const d = sv.data();
+      const anteriores = [...new Set([...(d.codigosAnteriores||[]), viejo])].filter(c=>c!==nuevo).slice(-10);
+      tx.set(refNuevo, { ...d, ...cambios, codigosAnteriores: anteriores,
+        codigoCambiadoAt: FS.FieldValue.serverTimestamp(), createdAt: d.createdAt || FS.FieldValue.serverTimestamp() });
+      tx.delete(refViejo);
+    }), 20000);
+  }catch(e){ showToast('No se pudo cambiar el código: '+e.message,'error'); return; }
+
+  /* Promociones que traen este producto */
+  (S.promos||[]).filter(pr=>(pr.items||[]).some(c=>c.barcode===viejo)).forEach(pr=>{
+    db.collection('promos').doc(pr.id).update({
+      items: pr.items.map(c=>c.barcode===viejo ? {...c, barcode:nuevo} : c),
+      updatedAt: FS.FieldValue.serverTimestamp()
+    }).catch(e=>console.warn('Promo', pr.id, e.message));
+  });
+  /* Carrito actual y ventas en espera de esta caja */
+  const cambiarEn = lista => (lista||[]).forEach(it=>{
+    if(it.barcode===viejo) it.barcode = nuevo;
+    if(it.isPromo) (it.items||[]).forEach(c=>{ if(c.barcode===viejo) c.barcode = nuevo; });
+  });
+  cambiarEn(S.cart); renderCart();
+  try{ const park = getParkedSales(); park.forEach(pk=>cambiarEn(pk.cart)); setParkedSales(park); }catch(e){}
+
+  S.editingBarcode = null;
+  hideProductModal(); loadProducts();
+  showToast(`Código cambiado: ${viejo} → ${nuevo} ✅`,'success');
+}
+
 async function toggleProduct(barcode,active){
   if(active){
     const ok=await confirmAction({title:'¿Desactivar producto?', msg:'Dejará de aparecer en búsquedas y ventas.', okLabel:'Desactivar', icon:'🚫'});
@@ -4628,7 +4783,7 @@ async function voidSale(){
     const repo = Array.isArray(_curSaleDetail.stockApplied) ? _curSaleDetail.stockApplied : vendidos;
     repo.forEach(r=>{
       if(!r.qty || String(r.barcode).includes('/')) return;
-      db.collection('products').doc(r.barcode).update({stock:FS.FieldValue.increment(r.qty)}).catch(()=>{});
+      db.collection('products').doc(codigoActual(r.barcode)).update({stock:FS.FieldValue.increment(r.qty)}).catch(()=>{});
     });
     vendidos.forEach(r=>{
       if(String(r.barcode).includes('/')) return;
@@ -5500,7 +5655,8 @@ async function commitSaleWithStock(item){
 
   const need = {};
   (item.stockDeltas||[]).forEach(d=>{
-    if(d.barcode && !String(d.barcode).includes('/')) need[d.barcode] = round3((need[d.barcode]||0) + (d.qty||0));
+    const b = codigoActual(d.barcode);   // por si le cambiaron el código mientras la venta esperaba subir
+    if(b && !String(b).includes('/')) need[b] = round3((need[b]||0) + (d.qty||0));
   });
   const codes = Object.keys(need);
   const nameOf = code => (p.items||[]).find(i=>i.barcode===code)?.name

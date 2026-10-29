@@ -130,9 +130,9 @@
             placeholder="Buscar producto, promoción o código… (F10)"
             oninput="handleSearchInput(this.value)"
             class="w-full pl-9 pr-3 py-3 border border-slate-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent"
-            onkeydown="if(event.key==='Enter'){event.preventDefault();doSearch();}">
+            onkeydown="onSearchKey(event)">
           <span id="hwScanBadge" class="hidden absolute right-2 top-1/2 -translate-y-1/2 text-[9px] font-bold text-indigo-500 bg-indigo-50 border border-indigo-200 px-1.5 py-0.5 rounded-full"><i class="fa-solid fa-keyboard mr-0.5"></i>USB</span>
-          <div id="searchDropdown" class="hidden absolute left-0 right-0 top-[110%] bg-white border border-slate-200 rounded-xl shadow-xl z-50 max-h-64 overflow-y-auto divide-y divide-slate-100"></div>
+          <div id="searchDropdown" class="hidden absolute left-0 right-0 top-[110%] bg-white border border-slate-200 rounded-xl shadow-xl z-50 max-h-[60vh] overflow-y-auto divide-y divide-slate-100"></div>
         </div>
         <button onclick="openScanModal()"
           class="bg-indigo-600 hover:bg-indigo-700 active:bg-indigo-800 text-white px-3.5 rounded-xl transition flex items-center gap-2 text-sm font-medium min-w-[44px] min-h-[44px]">
@@ -1409,7 +1409,7 @@
       <div>
         <label class="text-xs font-semibold text-slate-500 mb-1 flex items-center justify-between">
           <span>Código de barras</span>
-          <span class="text-[10px] text-slate-400 font-normal">Dejar vacío para auto-generar</span>
+          <span id="pf_barcodeHint" class="text-[10px] text-slate-400 font-normal">Dejar vacío para auto-generar</span>
         </label>
         <div class="flex gap-2">
           <input id="pf_barcode" type="text" inputmode="numeric" placeholder="Opcional · escanea o escribe" oninput="onBarcodeInput()"
@@ -2595,10 +2595,10 @@
 <!-- ▌TICKET PARA IMPRIMIR ▐ — solo se ve al imprimir desde el navegador -->
 <div id="ticketPrint" aria-hidden="true"></div>
 
-<script src="app.js?v=20261029d"></script>
-<script src="mp-point.js?v=20261029d"></script>
-<script src="importar-excel.js?v=20261029d"></script>
-<script src="promos.js?v=20261029d"></script>
-<script src="devoluciones.js?v=20261029d"></script>
+<script src="app.js?v=20261029f"></script>
+<script src="mp-point.js?v=20261029f"></script>
+<script src="importar-excel.js?v=20261029f"></script>
+<script src="promos.js?v=20261029f"></script>
+<script src="devoluciones.js?v=20261029f"></script>
 </body>
 </html>

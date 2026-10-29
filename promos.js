@@ -115,7 +115,7 @@ function pmBuscar(q){
   const box = g('pm_resultados');
   q = sinAcentos(String(q||'').trim());
   if(!q){ box.classList.add('hidden'); return; }
-  const lista = S.products.filter(p=>p.active!==false && (sinAcentos(p.name).includes(q) || sinAcentos(p.barcode).includes(q))).slice(0, 8);
+  const lista = buscarProductos(q, { limite: 8, incluirPromos: false });
   box.innerHTML = lista.length ? lista.map(p=>`
     <button type="button" onclick="pmAgregar('${esc(p.barcode)}')" class="w-full text-left px-3 py-2.5 hover:bg-indigo-50 flex justify-between items-center gap-2 border-b border-slate-100 last:border-0">
       <span class="min-w-0"><span class="block text-sm font-semibold text-slate-800 truncate">${esc(p.name)}</span>
