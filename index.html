@@ -73,6 +73,10 @@
     
     <div id="navClock" class="hidden lg:block text-xs text-indigo-200 tabular-nums font-mono"></div>
     
+    <button id="ventasBtn" onclick="abrirVentasTurno()" title="Ventas del turno · devoluciones" class="hidden items-center justify-center gap-1.5 bg-white/15 hover:bg-white/25 active:bg-white/30 p-1.5 sm:px-2.5 sm:py-1.5 rounded-lg text-xs font-medium transition nav-btn min-h-[40px] sm:min-h-[36px] min-w-[40px] sm:min-w-[32px] max-sm:!hidden">
+      <i class="fa-solid fa-receipt"></i><span class="hidden sm:inline">Ventas</span>
+    </button>
+
     <button id="shiftBtn" onclick="openShiftModal()" class="hidden items-center justify-center gap-1.5 bg-white/15 hover:bg-white/25 active:bg-white/30 p-1.5 sm:px-2.5 sm:py-1.5 rounded-lg text-xs font-medium transition nav-btn min-h-[40px] sm:min-h-[36px] min-w-[40px] sm:min-w-[32px]">
       <span id="shiftDot" class="shift-dot bg-gray-300"></span>
       <span id="shiftBtnLabel" class="hidden sm:inline">Turno</span>
@@ -1752,12 +1756,86 @@
       </button>
     </div>
     <div id="saleDetailContent"></div>
+    <div id="saleDevArea" class="hidden mt-4"></div>
     <div id="voidArea" class="hidden mt-4 pt-4 border-t border-slate-100">
       <label class="text-xs font-semibold text-slate-500 mb-1 block">Motivo de anulación</label>
       <input id="voidReasonInput" type="text" placeholder="Ej: error de cobro, producto devuelto…"
         class="w-full border border-slate-200 rounded-xl px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-red-400 mb-2">
       <button onclick="voidSale()" class="w-full bg-red-50 hover:bg-red-100 text-red-600 py-2.5 rounded-xl font-semibold text-sm transition min-h-[44px]">
         <i class="fa-solid fa-ban mr-1.5"></i>Anular esta venta
+      </button>
+    </div>
+  </div>
+</div>
+
+<!-- VENTAS DEL TURNO (vendedor) -->
+<div id="ventasTurnoModal" class="hidden fixed inset-0 z-[62] flex items-end sm:items-center justify-center bg-black/60 backdrop-blur-sm p-0 sm:p-4">
+  <div class="bg-white rounded-t-2xl sm:rounded-2xl shadow-2xl p-5 sm:p-6 w-full sm:max-w-lg sheet overflow-y-auto max-h-[95vh]">
+    <div class="flex items-start justify-between mb-3">
+      <div>
+        <h3 class="font-bold text-slate-800 text-lg"><i class="fa-solid fa-receipt text-indigo-500 mr-1.5"></i>Ventas del turno</h3>
+        <p id="vt_sub" class="text-xs text-slate-400"></p>
+      </div>
+      <div class="flex items-center gap-1">
+        <button onclick="cargarVentasTurno()" title="Actualizar" class="text-slate-400 hover:text-slate-600 p-1 min-w-[36px] min-h-[36px] flex items-center justify-center"><i class="fa-solid fa-rotate"></i></button>
+        <button onclick="cerrarVentasTurno()" aria-label="Cerrar" class="text-slate-400 hover:text-slate-600 p-1 min-w-[36px] min-h-[36px] flex items-center justify-center"><i class="fa-solid fa-xmark text-xl"></i></button>
+      </div>
+    </div>
+    <div id="vt_listaWrap">
+      <div class="flex items-center gap-2 mb-2">
+        <input id="vt_buscar" type="search" autocomplete="off" placeholder="Busca por folio, producto o total…" oninput="pintarVentasTurno()"
+          class="flex-1 border border-slate-200 rounded-xl px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 min-h-[44px]">
+      </div>
+      <p id="vt_resumen" class="text-[11px] text-slate-400 mb-1 text-right"></p>
+      <div id="vt_lista" class="border border-slate-200 rounded-xl overflow-hidden"></div>
+      <p class="text-[11px] text-slate-400 mt-2">Toca una venta para reimprimir el ticket o hacer una devolución o cambio.</p>
+    </div>
+    <div id="vt_detalle" class="hidden"></div>
+  </div>
+</div>
+
+<!-- DEVOLUCIÓN / CAMBIO -->
+<div id="devModal" class="hidden fixed inset-0 z-[66] flex items-end sm:items-center justify-center bg-black/60 backdrop-blur-sm p-0 sm:p-4">
+  <div class="bg-white rounded-t-2xl sm:rounded-2xl shadow-2xl p-5 sm:p-6 w-full sm:max-w-lg sheet overflow-y-auto max-h-[95vh]">
+    <div class="flex items-start justify-between mb-3">
+      <div>
+        <h3 id="dv_titulo" class="font-bold text-slate-800 text-lg">Devolución</h3>
+        <p id="dv_sub" class="text-xs text-slate-400"></p>
+      </div>
+      <button onclick="cerrarDevolucion()" aria-label="Cerrar" class="text-slate-400 hover:text-slate-600 p-1 min-w-[36px] min-h-[36px] flex items-center justify-center"><i class="fa-solid fa-xmark text-xl"></i></button>
+    </div>
+    <div class="flex items-center justify-between mb-2">
+      <p class="text-xs font-semibold text-slate-500">¿Qué devuelve el cliente?</p>
+      <button type="button" onclick="dvTodo()" class="text-xs font-semibold text-indigo-600 min-h-[32px]">Devolver todo</button>
+    </div>
+    <div id="dv_items" class="space-y-2 mb-3"></div>
+
+    <p class="text-xs font-semibold text-slate-500 mb-1">Motivo</p>
+    <div id="dv_motivos" class="flex flex-wrap gap-1.5 mb-2"></div>
+    <input id="dv_motivo" type="text" maxlength="140" placeholder="Escribe el motivo…"
+      class="w-full border border-slate-200 rounded-xl px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500 min-h-[44px] mb-3">
+
+    <label class="flex items-start gap-2 text-sm text-slate-600 cursor-pointer mb-3">
+      <input id="dv_regresa" type="checkbox" checked class="accent-emerald-600 w-4 h-4 mt-0.5 shrink-0">
+      <span>Regresar los productos al inventario<br><span class="text-[11px] text-slate-400">Quítalo si el producto está dañado o caducado y no se puede volver a vender.</span></span>
+    </label>
+
+    <div class="flex justify-between items-center bg-emerald-50 rounded-xl px-4 py-3 mb-1">
+      <span class="text-sm font-semibold text-slate-600">Saldo a favor del cliente</span>
+      <span id="dv_total" class="text-2xl font-black text-emerald-700 num">$0.00</span>
+    </div>
+    <p id="dv_nota" class="text-[11px] text-slate-400 mb-1"></p>
+    <p id="dv_tarjeta" class="hidden text-[11px] text-amber-700 bg-amber-50 rounded-lg px-3 py-2 mb-1"><i class="fa-solid fa-circle-info mr-1"></i>Esta venta se pagó con tarjeta: la devolución se entrega en efectivo de la caja.</p>
+    <p id="dv_err" class="text-red-500 text-xs hidden px-3 py-2 bg-red-50 rounded-lg mb-1"></p>
+
+    <div class="grid grid-cols-1 sm:grid-cols-2 gap-2 mt-3">
+      <button id="dv_btnCambio" type="button" onclick="hacerCambio()" disabled
+        class="bg-indigo-50 hover:bg-indigo-100 disabled:bg-slate-100 disabled:text-slate-400 text-indigo-700 py-3 rounded-xl font-bold text-sm min-h-[52px]">
+        <i class="fa-solid fa-right-left mr-1.5"></i>Cambio por otro producto
+      </button>
+      <button id="dv_btnDinero" type="button" onclick="devolverDinero()" disabled
+        class="bg-emerald-600 hover:bg-emerald-700 disabled:bg-slate-200 disabled:text-slate-400 text-white py-3 rounded-xl font-bold text-sm min-h-[52px]">
+        <i class="fa-solid fa-money-bill-wave mr-1.5"></i><span id="dv_btnDineroLbl">Devolver dinero</span>
       </button>
     </div>
   </div>
@@ -2517,9 +2595,10 @@
 <!-- ▌TICKET PARA IMPRIMIR ▐ — solo se ve al imprimir desde el navegador -->
 <div id="ticketPrint" aria-hidden="true"></div>
 
-<script src="app.js?v=20261029c"></script>
-<script src="mp-point.js?v=20261029c"></script>
-<script src="importar-excel.js?v=20261029c"></script>
-<script src="promos.js?v=20261029c"></script>
+<script src="app.js?v=20261029d"></script>
+<script src="mp-point.js?v=20261029d"></script>
+<script src="importar-excel.js?v=20261029d"></script>
+<script src="promos.js?v=20261029d"></script>
+<script src="devoluciones.js?v=20261029d"></script>
 </body>
 </html>

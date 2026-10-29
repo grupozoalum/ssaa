@@ -330,6 +330,7 @@ const qtyLabel = (p, n) => p && p.isBulk ? `${round3(n)} kg`
    crean en Admin → Promociones (promos.js).
 ════════════════════════════════════ */
 const PROMO_PREFIJO = 'PROMO:';
+const round2Dev = n => Math.round((Number(n)||0)*100)/100;
 function promoComoProducto(pr){
   return {
     barcode: PROMO_PREFIJO + pr.id, isPromo:true, promoId: pr.id,
@@ -390,22 +391,34 @@ function contenidoPromo(pr){
    Devuelve [{barcode, qty}] sumando lo repetido (suelto + dentro de promos). */
 function deltasDeItems(items){
   const m = {};
+  const sumar = (b, q) => { if(b) m[b] = round3((m[b]||0) + q); };
   (items||[]).forEach(i=>{
     if(!i || i.isRecharge) return;
+    /* Devolución / cambio: lo devuelto REGRESA al inventario (cantidad negativa),
+       salvo que el cajero indique que no (producto dañado). */
+    if(i.isCredit){
+      const dv = i.devolucion || {};
+      if(dv.regresa === false) return;
+      (dv.items||[]).forEach(r=>{
+        if(r.isPromo) (r.items||[]).forEach(c=>sumar(c.barcode, -(Number(c.qty)||0)*(Number(r.qty)||0)));
+        else sumar(r.barcode, -(Number(r.qty)||0));
+      });
+      return;
+    }
     if(i.isPromo){
       (i.items||[]).forEach(c=>{ if(c.barcode) m[c.barcode] = round3((m[c.barcode]||0) + (Number(c.qty)||0)*(Number(i.quantity)||0)); });
       return;
     }
     if(i.barcode) m[i.barcode] = round3((m[i.barcode]||0) + (Number(i.quantity)||0));
   });
-  return Object.entries(m).filter(([,q])=>q>0).map(([barcode,qty])=>({barcode, qty}));
+  return Object.entries(m).filter(([,q])=>q!==0).map(([barcode,qty])=>({barcode, qty}));
 }
 
 /* Revisa el carrito completo contra el stock actual.
    Devuelve la lista de productos que ya no alcanzan. */
 function cartStockProblems(){
   const need = {};
-  deltasDeItems(S.cart).forEach(d=>{ need[d.barcode] = d.qty; });   // las promos cuentan sus productos
+  deltasDeItems(S.cart).forEach(d=>{ if(d.qty>0) need[d.barcode] = d.qty; });   // las promos cuentan sus productos
   const problems = [];
   Object.entries(need).forEach(([barcode, qty])=>{
     const p = S.products.find(x=>x.barcode===barcode);
@@ -798,6 +811,7 @@ auth.onAuthStateChanged(async user => {
     g('navUserName').textContent = user.displayName || user.email;
     g('shiftBtn').classList.remove('hidden'); g('shiftBtn').classList.add('flex');
     g('hwBtn').classList.remove('hidden');
+    g('ventasBtn')?.classList.remove('hidden'); g('ventasBtn')?.classList.add('flex');
     restoreLocalCart();
     checkCurrentShift();
     if(S.isAdmin){
@@ -817,6 +831,7 @@ auth.onAuthStateChanged(async user => {
     g('navAdminBtn').classList.add('hidden');
     g('shiftBtn').classList.add('hidden'); g('shiftBtn').classList.remove('flex');
     g('hwBtn').classList.add('hidden');
+    g('ventasBtn')?.classList.add('hidden'); g('ventasBtn')?.classList.remove('flex');
     S.currentShift=null;
     tag.textContent='Consulta de Precios';
     tag.className='text-[10px] sm:text-xs bg-white/15 border border-white/20 px-2 py-0.5 rounded-full';
@@ -1507,7 +1522,7 @@ function changeCartQty(b,d){
   const i=S.cart.find(x=>x.barcode===b);
   if(!i) return;
   /* Las recargas no tienen cantidad: siempre 1 */
-  if(i.isRecharge) return;
+  if(i.isRecharge || i.isCredit) return;
   const min = i.isBulk ? 0.001 : 1;
   const next = round3(Math.max(min, i.quantity + d));
   if(d>0 && i.isPromo){
@@ -1569,7 +1584,7 @@ const cartItemHTML = it => `
   </div>`;
 
 function computeDiscountAmount(subtotal){
-  if(!S.discount) return 0;
+  if(!S.discount || subtotal<=0) return 0;
   const amt = S.discount.type==='pct' ? subtotal*(S.discount.value/100) : S.discount.value;
   return Math.max(0, Math.min(subtotal, amt));
 }
@@ -1585,7 +1600,7 @@ function cartTotals(){
 function ticketRowHTML(it){
   const bc = esc(it.barcode);
   const qty = it.isBulk ? `${round3(it.quantity)} kg` : `${it.quantity}`;
-  const stepper = (it.isRecharge || it.isBulk)
+  const stepper = (it.isRecharge || it.isBulk || it.isCredit)
     ? `<span class="text-sm font-bold text-slate-700 num lg:text-center lg:block">${qty}</span>`
     : `<div class="flex items-center gap-1.5 lg:justify-center">
          <button onclick="changeCartQty('${bc}',-1)" aria-label="Menos" class="w-9 h-9 lg:w-8 lg:h-8 rounded-full bg-slate-100 hover:bg-slate-200 active:bg-slate-300 text-slate-700 font-bold text-lg leading-none flex items-center justify-center">−</button>
@@ -1596,7 +1611,9 @@ function ticketRowHTML(it){
     <div class="min-w-0">
       <p class="text-[15px] lg:text-sm font-semibold text-slate-800 leading-snug break-anywhere">${it.isPromo?'<span class="inline-block bg-amber-400 text-white text-[9px] font-black px-1.5 py-0.5 rounded mr-1 align-middle">PROMO</span>':''}${esc(it.name)}</p>
       <p class="text-xs text-slate-400 mt-0.5 lg:hidden num">${fmt(it.price)}${it.isBulk?' / kg':' c/u'}</p>
-      ${it.isPromo
+      ${it.isCredit
+        ? `<p class="text-[11px] text-emerald-700 mt-0.5 truncate"><i class="fa-solid fa-rotate-left mr-1"></i>Saldo a favor · devuelve ${esc(((it.devolucion||{}).items||[]).map(r=>round3(r.qty)+' '+r.name).join(', '))}</p>`
+        : it.isPromo
         ? `<p class="text-[11px] text-amber-700 mt-0.5 truncate">${esc(contenidoPromo(it))}</p>`
         : `<p class="text-[11px] text-slate-400 mt-0.5 hidden lg:block font-mono truncate">${it.isRecharge?'Recarga':bc}</p>`}
     </div>
@@ -1755,6 +1772,7 @@ function toggleNavMore(ev){
     html += `<div class="px-4 pt-2 pb-2.5"><p class="text-sm font-bold text-slate-800 truncate">${esc(nombre)}</p>`
          +  `<p class="text-[11px] text-slate-400 truncate">${esc(S.userBranchName||nombreNegocio()||'')}</p></div><div class="nm-sep"></div>`;
   }
+  if(vis('ventasBtn')) html += item('fa-receipt', 'Ventas del turno · devoluciones', 'abrirVentasTurno()');
   if(vis('hwBtn'))   html += item('fa-print', S.printer.connected ? 'Impresora · conectada' : 'Impresora y hardware', 'openHardwareModal()');
   html += item(S.soundOn?'fa-volume-high':'fa-volume-xmark', S.soundOn?'Silenciar sonidos':'Activar sonidos', 'toggleSound()');
   html += item('fa-cloud', net ? 'Sincronización' : 'Sin internet · pendientes', 'openSyncModal()');
@@ -2570,7 +2588,7 @@ function debeAbrirCajon(sale){
   const c = cajonCfg();
   if(c.modo==='off' || c.auto==='never') return false;
   if(c.auto==='always') return true;
-  return (Number(sale.cashPortion)||0) > 0;     // 'cash': efectivo o mixto con parte en efectivo
+  return (Number(sale.cashPortion)||0) !== 0;   // 'cash': entra o sale efectivo (venta, mixto o devolución)
 }
 
 /* Abre el cajón.
@@ -3206,7 +3224,7 @@ async function showPaymentModal(metodo){
   S.payMethod=metodo; selectPayMethod(metodo);
   /* Quick amounts buttons */
   const quicks=[total,Math.ceil(total/10)*10,Math.ceil(total/50)*50,Math.ceil(total/100)*100];
-  const uniq=[...new Set(quicks)].filter(v=>v>=total).slice(0,4);
+  const uniq= total<=0 ? [] : [...new Set(quicks)].filter(v=>v>=total).slice(0,4);   // saldo a favor: no hay nada que recibir
   g('quickAmounts').innerHTML=uniq.map(v=>`<button onclick="setQuick(${v})" class="flex-1 bg-slate-100 hover:bg-slate-200 active:bg-slate-300 text-slate-700 text-xs font-bold py-2 rounded-lg min-h-[36px]">${fmt(v)}</button>`).join('');
   closeMobileCart();
   g('payModal').classList.remove('hidden');
@@ -3221,7 +3239,7 @@ document.addEventListener('keydown', e=>{
   e.preventDefault();
   if(S.payMethod==='cash' && !g('cashInput').value){
     const {grandTotal} = recalcTotalConComision();
-    g('cashInput').value = Math.round(grandTotal*100)/100; calcChange();
+    g('cashInput').value = Math.max(0, Math.round(grandTotal*100)/100); calcChange();
   }
   processPayment();
 });
@@ -3349,7 +3367,13 @@ async function processPayment(){
   const {grandTotal, fee} = recalcTotalConComision();
   let paid = grandTotal, cashPortion=0, cardPortion=0;
 
-  if(S.payMethod==='cash'){
+  if(grandTotal < 0 && S.payMethod!=='cash'){
+    /* Cambio por algo más barato: la diferencia se le entrega en efectivo */
+    showToast('El cliente tiene saldo a favor: elige Efectivo y entrégale '+fmt(-grandTotal),'warning'); beep('error'); return;
+  }
+  if(S.payMethod==='cash' && grandTotal < 0){
+    paid = 0; cashPortion = grandTotal;
+  } else if(S.payMethod==='cash'){
     paid=parseFloat(g('cashInput').value)||0;
     if(paid<grandTotal){ showToast('El monto recibido es menor al total','error'); beep('error'); return; }
     cashPortion=grandTotal;
@@ -3428,6 +3452,13 @@ async function finalizarVenta(pago, opts={}){
       ...(pago.tipoTarjeta ? {tipoTarjeta: pago.tipoTarjeta} : {}),
       ...(pago.comision ? {comision: pago.comision, comisionPct: pago.comisionPct} : {}),
     };
+    /* ¿Lleva devoluciones? (devolución en efectivo o cambio) */
+    const creditos = items.filter(i=>i.isCredit);
+    if(creditos.length){
+      saleData.devolucion = true;
+      saleData.devolucionDe = [...new Set(creditos.map(i=>i.devolucion?.saleId).filter(Boolean))];
+      saleData.montoDevuelto = round2Dev(-creditos.reduce((s,i)=>s+(Number(i.subtotal)||0),0));
+    }
 
     /* La venta se guarda SIEMPRE en el dispositivo primero: así el cobro
        nunca se traba aunque no haya internet. Después se sube a Firebase. */
@@ -3437,7 +3468,8 @@ async function finalizarVenta(pago, opts={}){
       id: localId, type:'sale', tsISO: saleData.tsISO, tries:0,
       payload: saleData,
       stockDeltas,
-      shiftUpdate: S.currentShift ? {shiftId:S.currentShift.id, cash:cashPortion, card:cardPortion, total} : null,
+      shiftUpdate: S.currentShift ? {shiftId:S.currentShift.id, cash:cashPortion, card:cardPortion, total,
+                                     ...(saleData.montoDevuelto ? {devol: saleData.montoDevuelto} : {})} : null,
       label: `Venta ${fmt(total)}`
     });
 
@@ -3447,6 +3479,7 @@ async function finalizarVenta(pago, opts={}){
       S.currentShift.cardSales=(S.currentShift.cardSales||0)+cardPortion;
       S.currentShift.totalSales=(S.currentShift.totalSales||0)+total;
       S.currentShift.salesCount=(S.currentShift.salesCount||0)+1;
+      if(saleData.montoDevuelto) S.currentShift.devoluciones=(S.currentShift.devoluciones||0)+saleData.montoDevuelto;
       saveLocalShift();
     }
 
@@ -3458,7 +3491,9 @@ async function finalizarVenta(pago, opts={}){
     /* Cajón de dinero: se abre ANTES del ticket para no hacer esperar al cajero.
        Solo en la venta que se está cobrando ahora (no en una que la terminal
        aprobó tarde, cuando la caja ya está en otra cosa). */
-    if(limpiar && debeAbrirCajon(saleData)) abrirCajon('venta');
+    if(opts.abrirCajon===true || (limpiar && debeAbrirCajon(saleData))) abrirCajon('venta');
+    /* Lo devuelto queda anotado en la venta original (para no devolverlo dos veces) */
+    if(creditos.length && typeof marcarDevueltos==='function') marcarDevueltos(saleData);
     /* Ticket: se imprime si el cajero dejó «Imprimir ticket: Sí» */
     showReceiptModal({...saleData, timestamp:now}, {imprimir: pago.imprimir});
     if(limpiar){
@@ -3526,8 +3561,17 @@ function ticketLines(sale){
   L.push({t:'center', k:'meta', text:fechaTicket(sale.tsISO)});
   const cajero = nombreCajero(sale);
   if(cajero) L.push({t:'center', k:'meta', text:'Atendió: '+cajero});
+  if(sale.devolucion) L.push({t:'center', k:'tag', text: (sale.items||[]).some(i=>!i.isCredit) ? 'CAMBIO' : 'DEVOLUCIÓN'});
   L.push({t:'hr'});
   (sale.items||[]).forEach(it=>{
+    if(it.isCredit){
+      const dv = it.devolucion || {};
+      L.push({t:'text', k:'item', text:it.name});
+      (dv.items||[]).forEach(r=>L.push({t:'text', k:'meta', text:`  devuelve ${round3(r.qty)}${r.isBulk?' kg':''} ${r.name}`}));
+      if(dv.motivo) L.push({t:'text', k:'meta', text:'  Motivo: '+dv.motivo});
+      L.push({t:'row', k:'itemrow', l:'Saldo a favor', r:'-'+fmt(-(Number(it.subtotal)||0))});
+      return;
+    }
     const qty = it.isBulk ? `${round3(it.quantity)} kg` : `${it.quantity}`;
     L.push({t:'text', k:'item', text:it.name});
     if(it.isPromo) (it.items||[]).forEach(c=>
@@ -3535,7 +3579,7 @@ function ticketLines(sale){
     L.push({t:'row', k:'itemrow', l:`${qty} x ${fmt(it.price)}`, r:fmt(it.subtotal)});
   });
   L.push({t:'hr'});
-  const nArt = (sale.items||[]).reduce((n,it)=>n + (it.isBulk ? 1 : (Number(it.quantity)||0)), 0);
+  const nArt = (sale.items||[]).reduce((n,it)=>n + (it.isCredit ? 0 : it.isBulk ? 1 : (Number(it.quantity)||0)), 0);
   L.push({t:'row', k:'sub', l:`Subtotal (${nArt} art.)`, r:fmt(sale.subtotal)});
   if(sale.discountAmt) L.push({t:'row', k:'sub', l:'Descuento', r:'-'+fmt(sale.discountAmt)});
   if(sale.comision) L.push({t:'row', k:'sub',
@@ -3543,7 +3587,9 @@ function ticketLines(sale){
   L.push({t:'row', k:'total', l:'TOTAL', r:fmt(sale.total)});
   if(sale.payMethod){
     L.push({t:'row', k:'pay', l:'Pago', r:sale.tipoTarjeta==='vales' && sale.payMethod==='card' ? 'Vales' : (METODO_TICKET[sale.payMethod]||'')});
-    if(sale.payMethod==='cash'){
+    if(sale.payMethod==='cash' && (sale.total||0) < 0){
+      L.push({t:'row', k:'pay', l:'Se entregó al cliente', r:fmt(-(sale.total||0))});
+    } else if(sale.payMethod==='cash'){
       L.push({t:'row', k:'pay', l:'Recibido', r:fmt(sale.amountPaid||sale.total)});
       L.push({t:'row', k:'pay', l:'Cambio', r:fmt(sale.change||0)});
     }
@@ -3925,7 +3971,7 @@ async function loadMetrics(period){
     const tot=sales.reduce((s,x)=>s+(x.total||0),0);
     const cash=sales.reduce((s,x)=>s+(x.cashPortion!=null?x.cashPortion:(x.payMethod==='cash'?(x.total||0):0)),0);
     const discounts=sales.reduce((s,x)=>s+(x.discountAmt||0),0);
-    const tx=sales.length;
+    const tx=sales.filter(x=>!(x.devolucion && (x.total||0)<=0)).length;   // una devolución no es un ticket de venta
     g('kpiTotal').textContent=fmt(tot); g('kpiCash').textContent=fmt(cash);
     g('kpiTx').textContent=tx; g('kpiAvg').textContent=fmt(tx?tot/tx:0);
     g('kpiDiscounts').textContent=fmt(discounts);
@@ -3962,7 +4008,12 @@ async function loadMetrics(period){
     drawProfitChart(byDate, expByDate, profitByDate);
     drawExpenseCatChart('chartExpCat', expByCat, 'expCat');
     const bySeller={};sales.forEach(s=>{const k=s.sellerName||'–';bySeller[k]=(bySeller[k]||0)+(s.total||0);});
-    const byProd={};sales.forEach(s=>(s.items||[]).forEach(it=>{if(!byProd[it.barcode])byProd[it.barcode]={name:it.name,qty:0,rev:0};byProd[it.barcode].qty+=it.quantity||0;byProd[it.barcode].rev+=it.subtotal||0;}));
+    const byProd={};
+    const sumaProd=(b,name,q,rev)=>{ if(!byProd[b])byProd[b]={name,qty:0,rev:0}; byProd[b].qty+=q; byProd[b].rev+=rev; };
+    sales.forEach(s=>(s.items||[]).forEach(it=>{
+      if(it.isCredit){ ((it.devolucion||{}).items||[]).forEach(r=>sumaProd(r.isPromo?'PROMO:'+(r.promoId||r.barcode):r.barcode, r.name, -(r.qty||0), -(r.monto||0))); return; }
+      sumaProd(it.barcode, it.name, it.quantity||0, it.subtotal||0);
+    }));
     drawLine(byDate); drawBar(bySeller);
     const pl=Object.values(byProd).sort((a,b)=>b.qty-a.qty);
     prodRank('topProdsEl',pl.slice(0,8),true); prodRank('botProdsEl',[...pl].reverse().slice(0,8),false);
@@ -4551,6 +4602,7 @@ async function showSaleDetail(id){
         <span>Total</span><span class="text-indigo-700">${fmt(s.total)}</span>
       </div>`;
     g('voidArea').classList.toggle('hidden', !S.isAdmin || !!s.voided);
+    if(typeof pintarBotonDevolucion==='function') pintarBotonDevolucion(s);
     g('voidReasonInput').value='';
     g('saleDetailModal').classList.remove('hidden');
   }catch(e){ showToast('Error: '+e.message,'error'); }
@@ -4560,6 +4612,9 @@ async function voidSale(){
   if(!_curSaleDetail) return;
   const reason=g('voidReasonInput').value.trim();
   if(!reason){ showToast('Escribe un motivo de anulación','warning'); return; }
+  if(_curSaleDetail.montoDevuelto>0 && !_curSaleDetail.devolucion){
+    showToast('Esta venta tiene devoluciones. Anula primero esas devoluciones (aparecen en el historial).','warning'); return;
+  }
   const ok=await confirmAction({title:'¿Anular esta venta?', msg:'Se repondrá el stock de los productos y la venta se excluirá de las métricas.', okLabel:'Anular venta', icon:'🛑'});
   if(!ok) return;
   try{
@@ -4579,6 +4634,7 @@ async function voidSale(){
       if(String(r.barcode).includes('/')) return;
       db.collection('products').doc(r.barcode).update({salesCount:FS.FieldValue.increment(-r.qty)}).catch(()=>{});
     });
+    if(_curSaleDetail.devolucion && typeof revertirDevueltos==='function') revertirDevueltos(_curSaleDetail);
     showToast('Venta anulada, stock repuesto ✅','success');
     hideSaleDetail(); loadHistory(); loadMetrics(document.querySelector('.pbtn.on')?.dataset.period||'day');
   }catch(e){ showToast('Error al anular: '+e.message,'error'); }
@@ -5308,6 +5364,7 @@ function corteLines(c){
   L.push({t:'row', l:'Tickets', r:String(s.salesCount||c.sales.length||0)});
   L.push({t:'row', l:'Total vendido', r:fmt(s.totalSales||0)});
   L.push({t:'row', l:'Con tarjeta', r:fmt(s.cardSales||0)});
+  if(s.devoluciones) L.push({t:'row', l:'Devoluciones (ya restadas)', r:'-'+fmt(s.devoluciones)});
   if(c.exps.length){
     L.push({t:'hr'});
     L.push({t:'text', text:'Salidas registradas', strong:true});
@@ -5508,7 +5565,8 @@ async function pushOutboxItem(item){
         cashSales: FS.FieldValue.increment(item.shiftUpdate.cash||0),
         cardSales: FS.FieldValue.increment(item.shiftUpdate.card||0),
         totalSales:FS.FieldValue.increment(item.shiftUpdate.total||0),
-        salesCount:FS.FieldValue.increment(1)
+        salesCount:FS.FieldValue.increment(1),
+        ...(item.shiftUpdate.devol ? {devoluciones: FS.FieldValue.increment(item.shiftUpdate.devol)} : {})
       }).catch(()=>{});
       outboxPatch(item.id,{shiftPending:false});
     }
@@ -6119,6 +6177,7 @@ document.addEventListener('keydown',e=>{
     hideEntryModal(); hideExpenseModal(); hideShiftDetail(); hideSyncModal();
     hideBloqueo(); hideScheduleModal(); hideAccessModal();
     if(typeof hidePromoModal==='function') hidePromoModal();
+    if(typeof cerrarVentasTurno==='function'){ cerrarDevolucion(); cerrarVentasTurno(); }
     if(!g('confirmModal').classList.contains('hidden')) _confirmResolve(false);
     closeMobileCart();
   }
