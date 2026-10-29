@@ -1858,7 +1858,7 @@ function initHardwareScanner(){
       }
       return;
     }
-    if(e.key.length === 1){
+    if((e.key||'').length === 1){
       // Human typing is usually >80ms between keys; scanners are typically <30ms.
       if(gap > HW.MAX_GAP && HW.buffer.length > 0){
         // Too slow — likely human typing, restart buffer instead of treating as scan
@@ -5606,7 +5606,7 @@ document.addEventListener('keydown',e=>{
   /* Atajos de caja: F4 efectivo · F2 tarjeta · F3 mixto · F1 buscar · F8 vaciar.
      Funcionan aunque el cursor esté en el buscador (las F no escriben nada). */
   /* Vendiendo, si escribes sin tener nada enfocado, va directo al buscador */
-  if(modoVenta() && e.key.length===1 && !e.ctrlKey && !e.metaKey && !e.altKey
+  if(modoVenta() && (e.key||'').length===1 && !e.ctrlKey && !e.metaKey && !e.altKey
      && (document.activeElement===document.body || !document.activeElement)
      && g('adminPanel').classList.contains('hidden')
      && ![...document.querySelectorAll('[id$="Modal"]')].some(m=>!m.classList.contains('hidden'))){

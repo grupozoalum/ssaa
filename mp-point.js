@@ -229,10 +229,16 @@ function pintarEsperaMP(d){
   const activo  = !!(S.mpCobro && S.mpCobro.id === c.id);
   const enCurso = MP_EN_CURSO.includes(st);
 
+  const cancelando  = enCurso && !!d.cancelRequested;
+  const espera      = Date.now() - c.desde;
+  const consultando = !!S.mpVerificando && Date.now() - S.mpVerificando < 8000;
+
   let msg = st === 'error' ? (d.error || 'Error desconocido.') : ui.m;
   if(st === 'rejected' && d.statusDetail) msg += ' (' + d.statusDetail + ')';
   if(d.nota) msg += ' ' + d.nota;
-  if(enCurso && d.cancelRequested) msg = d.cancelError || 'Cancelando el cobro…';
+  if(cancelando) msg = d.cancelError || d.cancelNota || 'Cancelando el cobro…';
+  else if(enCurso && d.cancelError) msg = d.cancelError;
+  if(enCurso && consultando) msg = 'Consultando a Mercado Pago…';
 
   g('mpWaitIcon').className = 'w-16 h-16 mx-auto rounded-2xl flex items-center justify-center text-3xl mb-3 ' + ui.c;
   g('mpWaitIcon').innerHTML = '<i class="fa-solid ' + ui.i + '"></i>';
@@ -242,13 +248,22 @@ function pintarEsperaMP(d){
   g('mpWaitDevice').textContent = (c.pago.payMethod === 'mixed' ? 'Efectivo aparte: ' + fmt(c.pago.cashPortion) + ' · ' : '')
                                 + 'Terminal ' + c.deviceId;
 
-  const ver = (id, on) => g(id).classList.toggle('hidden', !on);
+  const ver = (id, on) => g(id)?.classList.toggle('hidden', !on);
   ver('mpWaitCancel',  activo && enCurso && !d.cancelRequested);
+  /* "Ya lo cancelé" / "Verificar": le pide al servidor que le pregunte a Mercado Pago.
+     Solo tiene sentido cuando el cobro ya llegó a Mercado Pago (status sent). */
+  ver('mpWaitCheck',   activo && st === 'sent' && (cancelando || espera > 20000));
+  if(g('mpWaitCheckLbl')) g('mpWaitCheckLbl').textContent = cancelando ? 'Ya lo cancelé en la terminal' : 'Verificar con Mercado Pago';
+  if(g('mpWaitCheck')) g('mpWaitCheck').disabled = consultando;
   ver('mpWaitManual',  activo && st === 'review');
   ver('mpWaitDiscard', activo && st === 'review');
   ver('mpWaitRetry',   !activo && st !== 'paid');
   ver('mpWaitClose',   !activo && st !== 'paid');
-  ver('mpWaitHide',    activo && enCurso && Date.now() - c.desde > MP_OCULTAR_TRAS_MS);
+  /* Salida que nunca falta: si se pidió cancelar, de inmediato; si no, a los 45 s */
+  ver('mpWaitHide',    activo && enCurso && (cancelando || espera > MP_OCULTAR_TRAS_MS));
+  if(g('mpWaitHideLbl')) g('mpWaitHideLbl').textContent = cancelando
+    ? 'Cerrar y cobrar de otra forma'
+    : 'La terminal no responde · seguir sin esperar';
 }
 /* Revisa cada 5 s para mostrar el botón de "seguir sin esperar" */
 setInterval(() => {
@@ -261,6 +276,19 @@ async function cancelarCobroMP(){
   try{
     await mpCol().doc(c.id).update({ cancelRequested:true, cancelRequestedAt: FS.FieldValue.serverTimestamp() });
   }catch(e){ showToast('No se pudo pedir la cancelación: ' + (e.code || e.message),'error'); }
+}
+/* "Ya lo cancelé en la terminal" / "Verificar con Mercado Pago" */
+async function verificarCobroMP(){
+  const c = S.mpCobro; if(!c) return;
+  S.mpVerificando = Date.now();
+  pintarEsperaMP(S.mpUltimoDato);
+  try{
+    await mpCol().doc(c.id).update({ checkRequestedAt: FS.FieldValue.serverTimestamp() });
+  }catch(e){
+    S.mpVerificando = 0;
+    showToast('No se pudo consultar: ' + (e.code || e.message),'error');
+  }
+  setTimeout(() => { if(S.mpCobro && S.mpCobro.id === c.id) pintarEsperaMP(S.mpUltimoDato); }, 8200);
 }
 /* Tras un rechazo: volver a la ventana de cobro (que sigue abierta debajo) */
 function reintentarCobroMP(){
@@ -291,13 +319,32 @@ async function descartarRevisionMP(){
 /* La terminal no responde (webhook mal configurado, terminal apagada…) */
 async function ocultarEsperaMP(){
   const c = S.mpCobro; if(!c) return;
+  const p = leerPendMP();
+  const marcarOculto = () => {
+    if(p[c.id]){ p[c.id].oculto = true; try{ localStorage.setItem(MP_PEND_KEY, JSON.stringify(p)); }catch(e){} }
+  };
+
+  if(S.mpUltimoDato && S.mpUltimoDato.cancelRequested){
+    /* Ya se pidió cancelar: se libera la caja SIN vaciar el carrito,
+       para cobrar los mismos productos en efectivo o con otra tarjeta. */
+    const ok = await confirmAction({ title:'¿Ya no aparece el cobro en la terminal?',
+      msg:'Revisa que la pantalla de la terminal ya NO muestre el monto.\n\n'
+        + 'La caja se libera para cobrar de otra forma. Si la terminal llegara a cobrar de todos modos, esa venta se registrará sola.',
+      okLabel:'Sí, cobrar de otra forma', icon:'💳' });
+    if(!ok) return;
+    marcarOculto();
+    S.mpCobro = null;          // el listener sigue vivo en segundo plano
+    ocultarModalMP();          // la ventana de cobro sigue abierta debajo: elige Efectivo
+    showToast('Caja liberada. Elige otra forma de pago.','info');
+    return;
+  }
+
   const ok = await confirmAction({ title:'¿Seguir sin esperar a la terminal?',
     msg:'El cobro queda pendiente: si la terminal lo aprueba, la venta se registra sola.\n\n'
       + 'Por seguridad se vacía el carrito. NO vuelvas a cobrar estos productos hasta revisar la terminal.',
     okLabel:'Seguir sin esperar', icon:'⏳' });
   if(!ok) return;
-  const p = leerPendMP();
-  if(p[c.id]){ p[c.id].oculto = true; try{ localStorage.setItem(MP_PEND_KEY, JSON.stringify(p)); }catch(e){} }
+  marcarOculto();
   S.mpCobro = null;            // el listener sigue vivo en segundo plano
   ocultarModalMP(); hidePayModal();
   S.cart = []; S.discount = null; renderCart();

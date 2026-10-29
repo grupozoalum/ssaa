@@ -1959,11 +1959,12 @@
     <p id="mpWaitDevice" class="text-[11px] text-slate-400 font-mono mt-2 break-anywhere"></p>
     <div class="mt-4 space-y-2">
       <button id="mpWaitCancel" onclick="cancelarCobroMP()" class="w-full bg-red-50 hover:bg-red-100 text-red-600 py-3 rounded-xl font-bold text-sm min-h-[48px]"><i class="fa-solid fa-ban mr-1.5"></i>Cancelar cobro</button>
+      <button id="mpWaitCheck" onclick="verificarCobroMP()" class="hidden w-full bg-sky-600 hover:bg-sky-700 disabled:opacity-60 text-white py-3 rounded-xl font-bold text-sm min-h-[48px]"><i class="fa-solid fa-rotate mr-1.5"></i><span id="mpWaitCheckLbl">Ya lo cancelé en la terminal</span></button>
       <button id="mpWaitManual" onclick="registrarManualMP()" class="hidden w-full bg-emerald-600 hover:bg-emerald-700 text-white py-3 rounded-xl font-bold text-sm min-h-[48px]"><i class="fa-solid fa-check mr-1.5"></i>La terminal dice APROBADO</button>
       <button id="mpWaitDiscard" onclick="descartarRevisionMP()" class="hidden w-full bg-slate-100 hover:bg-slate-200 text-slate-700 py-3 rounded-xl font-bold text-sm min-h-[48px]">No se cobró</button>
       <button id="mpWaitRetry" onclick="reintentarCobroMP()" class="hidden w-full bg-indigo-600 hover:bg-indigo-700 text-white py-3 rounded-xl font-bold text-sm min-h-[48px]"><i class="fa-solid fa-rotate-left mr-1.5"></i>Elegir otra forma de pago</button>
       <button id="mpWaitClose" onclick="cerrarEsperaMP()" class="hidden w-full text-slate-500 hover:text-slate-700 py-2.5 text-sm font-semibold min-h-[44px]">Cerrar</button>
-      <button id="mpWaitHide" onclick="ocultarEsperaMP()" class="hidden w-full text-slate-400 hover:text-slate-600 py-2 text-xs font-semibold min-h-[40px]">La terminal no responde · seguir sin esperar</button>
+      <button id="mpWaitHide" onclick="ocultarEsperaMP()" class="hidden w-full bg-slate-100 hover:bg-slate-200 text-slate-700 py-2.5 rounded-xl text-sm font-semibold min-h-[44px]"><span id="mpWaitHideLbl">La terminal no responde · seguir sin esperar</span></button>
     </div>
   </div>
 </div>
@@ -2256,7 +2257,7 @@
 <!-- ▌TICKET PARA IMPRIMIR ▐ — solo se ve al imprimir desde el navegador -->
 <div id="ticketPrint" aria-hidden="true"></div>
 
-<script src="app.js?v=20261010i"></script>
-<script src="mp-point.js?v=20261010i"></script>
+<script src="app.js?v=20261028b"></script>
+<script src="mp-point.js?v=20261028b"></script>
 </body>
 </html>
