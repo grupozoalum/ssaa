@@ -134,7 +134,8 @@ let PERFIL_REF = null; // referencia al documento del usuario (para escuchar su 
 const COLS_DEL_NEGOCIO = new Set([
   'products','sales','users','shifts','expenses',
   'terminals','branches','rechargeCarriers','inventoryEntries',
-  'customers','counters','contratos','accessRequests'
+  'customers','counters','contratos','accessRequests',
+  'aperturasCajon'   // bitácora: quién abrió el cajón sin venta y cuándo
 ]);
 
 const db = {
@@ -2035,7 +2036,14 @@ function markPrinterLost(){
 
 /* Reconexión automática: al abrir el POS y al volver a enchufar la impresora.
    No pide permiso otra vez: usa la impresora que ya autorizaste antes. */
-async function autoReconnectPrinter(){
+/* Si dos partes la piden al mismo tiempo (cajón y ticket), comparten el mismo intento */
+let _reconPrn = null;
+function autoReconnectPrinter(){
+  if(S.printer.connected) return Promise.resolve(true);
+  if(!_reconPrn) _reconPrn = _autoReconnectPrinter().finally(()=>{ _reconPrn = null; });
+  return _reconPrn;
+}
+async function _autoReconnectPrinter(){
   if(S.printer.connected) return true;
   let last = null;
   try{ last = JSON.parse(localStorage.getItem(PRN_LAST_KEY)||'null'); }catch(e){}
@@ -2047,8 +2055,9 @@ async function autoReconnectPrinter(){
       if(d){ await openUsbPrinter(d); return true; }
     }
     if(last.kind==='serial' && serialSupported()){
-      const ports = await navigator.serial.getPorts();
-      if(ports[0]){ await openSerialPrinter(ports[0]); return true; }
+      /* Si también hay un cajón USB autorizado, no confundir su puerto con el de la impresora */
+      const port = (await navigator.serial.getPorts()).find(p=>!esPuertoDelCajon(p));
+      if(port){ await openSerialPrinter(port); return true; }
     }
   }catch(e){ console.warn('Reconexión de impresora:', e.message); }
   return false;
@@ -2106,7 +2115,7 @@ function updatePrinterUI(){
   ['prn_paper','hw_paper'].forEach(id=>set(id, paperMM(cfg)));
   ['prn_font','hw_font'].forEach(id=>set(id, cfg.bigFont?'big':'normal'));
   ['prn_end','hw_end'].forEach(id=>set(id, cfg.ending==='cut' ? 'cut' : 'tear'+cfg.feedLines));
-  set('prn_auto', cfg.autoPrint);
+  ['prn_auto','hw_auto'].forEach(id=>set(id, cfg.autoPrint));
   ['prn_colsHint','hw_colsHint'].forEach(id=>{ const el=g(id); if(el) el.textContent = cfg.bigFont
       ? `Todo en letra grande: ${prnCols(cfg)} letras por renglón (gasta más papel).`
       : `${prnBaseCols(cfg)} letras por renglón; nombre y TOTAL en grande.`; });
@@ -2282,6 +2291,265 @@ function prnEndBytes(cfg){
   return new Uint8Array(n).fill(0x0A);
 }
 
+/* ════════════════════════════════════════════════════════════════
+   CAJÓN DE DINERO
+   Dos formas de conexión (se elige en Hardware → «Cajón de dinero»):
+   ─ 'printer': el cajón va conectado a la IMPRESORA de tickets con el
+     cable tipo teléfono (RJ11/RJ12). Es lo más común. El POS le manda a
+     la impresora el comando ESC p y la impresora da el pulso que abre.
+   ─ 'usb': el cajón tiene su PROPIO cable USB. Windows lo ve como un
+     puerto COM; se abre con Web Serial (Chrome/Edge).
+   ─ 'off': no hay cajón (se oculta el botón).
+   Cada caja guarda su configuración en ESTE navegador.
+════════════════════════════════════════════════════════════════ */
+const CAJON_KEY      = 'posCajonCfg_v1';
+const CAJON_PORT_KEY = 'posCajonPuerto_v1';     // {v, p}: el puerto USB del cajón, para reconectar solo
+const CAJON_DEFAULT  = { modo:'printer', pin:2, auto:'cash' };
+/* auto: 'cash'   = se abre al cobrar ventas con efectivo (efectivo y mixto)
+         'always' = se abre en todas las ventas
+         'never'  = solo con el botón «Cajón» o la tecla F9 */
+S.cajon = { port:null, writer:null, connected:false };
+
+function cajonCfg(){
+  try{ return {...CAJON_DEFAULT, ...JSON.parse(localStorage.getItem(CAJON_KEY)||'{}')}; }
+  catch(e){ return {...CAJON_DEFAULT}; }
+}
+function saveCajonCfg(patch){
+  const c = {...cajonCfg(), ...patch};
+  try{ localStorage.setItem(CAJON_KEY, JSON.stringify(c)); }catch(e){}
+  return c;
+}
+/* ESC p m t1 t2 → pulso por el pin 2 (m=0) o el pin 5 (m=1), 50 ms encendido / 500 ms apagado */
+const cajonPulso = pin => new Uint8Array([0x1B, 0x70, Number(pin)===5 ? 0x01 : 0x00, 0x19, 0xFA]);
+
+/* Identificador del puerto USB (fabricante + modelo) para distinguir el cajón de la impresora */
+function infoPuerto(port){
+  try{ const i = port.getInfo(); return {v:i.usbVendorId||0, p:i.usbProductId||0}; }
+  catch(e){ return {v:0, p:0}; }
+}
+function puertoCajonGuardado(){
+  try{ return JSON.parse(localStorage.getItem(CAJON_PORT_KEY)||'null'); }catch(e){ return null; }
+}
+function esPuertoDelCajon(port){
+  if(S.cajon.port && port===S.cajon.port) return true;
+  const g0 = puertoCajonGuardado(); if(!g0 || (!g0.v && !g0.p)) return false;
+  const i = infoPuerto(port);
+  return i.v===g0.v && i.p===g0.p;
+}
+
+async function abrirPuertoCajon(port){
+  if(S.cajon.connected) await cerrarPuertoCajon();
+  if(!port.writable) await port.open({baudRate:9600});
+  Object.assign(S.cajon, {port, writer:port.writable.getWriter(), connected:true});
+  try{ localStorage.setItem(CAJON_PORT_KEY, JSON.stringify(infoPuerto(port))); }catch(e){}
+  pintarCajonUI();
+}
+async function cerrarPuertoCajon(){
+  const C = S.cajon;
+  try{ if(C.writer) C.writer.releaseLock(); }catch(e){}
+  try{ if(C.port) await C.port.close(); }catch(e){}
+  Object.assign(S.cajon, {port:null, writer:null, connected:false});
+  pintarCajonUI();
+}
+/* Conectar el cajón USB (pide elegir el puerto; necesita un clic) */
+async function conectarCajonUSB(){
+  if(!serialSupported()){ showToast('Este navegador no puede abrir el cajón USB: usa Chrome o Edge en computadora','warning'); return false; }
+  let port;
+  try{ port = await navigator.serial.requestPort(); }catch(e){ return false; }   // canceló la ventana
+  if(S.printer.kind==='serial' && port===S.printer.port){
+    showToast('Ese puerto es el de la impresora. Elige el del cajón.','error'); return false;
+  }
+  try{
+    await abrirPuertoCajon(port);
+    showToast('Cajón conectado ✅','success');
+    return true;
+  }catch(e){
+    showToast('No se pudo abrir el puerto del cajón: '+e.message,'error');
+    return false;
+  }
+}
+async function desconectarCajonUSB(){
+  await cerrarPuertoCajon();
+  try{ localStorage.removeItem(CAJON_PORT_KEY); }catch(e){}
+  showToast('Cajón desconectado','info');
+}
+/* Reconexión sin pedir permiso otra vez (el puerto ya se autorizó antes) */
+async function autoReconnectCajon(){
+  if(S.cajon.connected) return true;
+  if(cajonCfg().modo!=='usb' || !serialSupported()) return false;
+  const g0 = puertoCajonGuardado(); if(!g0) return false;
+  try{
+    const ports = (await navigator.serial.getPorts()).filter(p=>p!==S.printer.port);
+    const port = ports.find(p=>{ const i=infoPuerto(p); return i.v===g0.v && i.p===g0.p; });
+    if(port){ await abrirPuertoCajon(port); return true; }
+  }catch(e){ console.warn('Reconexión del cajón:', e.message); }
+  return false;
+}
+/* Cajón USB: manda el pulso ESC p y además mueve las señales DTR/RTS.
+   Unos modelos abren con el comando y otros con la señal: así sirven los dos. */
+async function enviarCajonUSB(cfg){
+  const C = S.cajon;
+  try{
+    await C.writer.write(cajonPulso(cfg.pin));
+    try{
+      await C.port.setSignals({dataTerminalReady:true, requestToSend:true});
+      await sleep(200);
+      await C.port.setSignals({dataTerminalReady:false, requestToSend:false});
+    }catch(e){ /* hay adaptadores que no manejan señales: con el comando basta */ }
+  }catch(e){
+    Object.assign(S.cajon, {writer:null, connected:false});
+    pintarCajonUI();
+    throw e;
+  }
+}
+
+/* ¿Esta venta abre el cajón sola? */
+function debeAbrirCajon(sale){
+  const c = cajonCfg();
+  if(c.modo==='off' || c.auto==='never') return false;
+  if(c.auto==='always') return true;
+  return (Number(sale.cashPortion)||0) > 0;     // 'cash': efectivo o mixto con parte en efectivo
+}
+
+/* Abre el cajón.
+   origen: 'venta'  → lo abre el cobro (no se registra: la venta ya queda registrada)
+           'manual' → botón «Cajón» o F9, sin venta (queda en la bitácora)
+           'prueba' → botón Probar de Hardware (queda en la bitácora) */
+let _cajonOcupado = false;
+async function abrirCajon(origen='manual'){
+  const cfg = cajonCfg();
+  const venta = origen==='venta';
+  if(cfg.modo==='off'){
+    if(!venta) showToast('No hay cajón configurado. Actívalo en Hardware → Cajón de dinero.','warning');
+    return false;
+  }
+  if(!venta && _cajonOcupado) return false;      // doble clic / F9 sostenida
+  _cajonOcupado = true;
+  try{
+    if(cfg.modo==='usb'){
+      if(!S.cajon.connected && !(await autoReconnectCajon())){
+        if(venta){ showToast('No se abrió el cajón: no está conectado (Hardware → Cajón de dinero)','warning'); return false; }
+        if(!(await conectarCajonUSB())) return false;
+      }
+      await enviarCajonUSB(cfg);
+    } else {
+      /* Por la impresora: va en la misma fila que los tickets para no mezclarse */
+      if(!S.printer.connected){
+        if(venta){
+          if(!(await autoReconnectPrinter())){ showToast('No se abrió el cajón: la impresora no está conectada','warning'); return false; }
+        } else if(!(await ensurePrinter())) return false;
+      }
+      await prnJob(()=>prnSend(cajonPulso(cfg.pin)));
+    }
+    if(!venta){
+      registrarAperturaCajon(origen);
+      showToast('Cajón abierto','success');
+    }
+    return true;
+  }catch(e){
+    showToast('No se pudo abrir el cajón: '+e.message,'error');
+    return false;
+  }finally{
+    setTimeout(()=>{ _cajonOcupado = false; }, 800);
+  }
+}
+
+/* Bitácora de aperturas SIN venta: negocios/{TENANT}/aperturasCajon.
+   Así el dueño puede revisar quién abrió el cajón y a qué hora. */
+function registrarAperturaCajon(motivo){
+  try{
+    if(!TENANT || !S.user) return;
+    const now = new Date();
+    db.collection('aperturasCajon').add({
+      motivo,
+      userId: S.user.uid,
+      userName: nombreCajeroActual(),
+      branchId: S.userBranchId||null,
+      branchName: S.userBranchName||null,
+      shiftId: S.currentShift?.id||null,
+      caja: S.tid||null,
+      tsISO: now.toISOString(),
+      date: localDateStr(now),
+      createdAt: firebase.firestore.FieldValue.serverTimestamp()
+    }).catch(e=>console.warn('Bitácora del cajón:', e.message));
+  }catch(e){ console.warn('Bitácora del cajón:', e.message); }
+}
+
+/* Controles de Hardware → «Cajón de dinero» y botón «Cajón» de la caja */
+function onCajonChange(){
+  const modo = g('cj_modo')?.value || 'printer';
+  const pin  = Number(g('cj_pin')?.value) === 5 ? 5 : 2;
+  const auto = ['cash','always','never'].includes(g('cj_auto')?.value) ? g('cj_auto').value : 'cash';
+  saveCajonCfg({modo, pin, auto});
+  if(modo!=='usb' && S.cajon.connected) cerrarPuertoCajon();
+  if(modo==='usb') autoReconnectCajon();
+  pintarCajonUI();
+  showToast('Ajuste del cajón guardado','success');
+}
+function pintarCajonUI(){
+  const c = cajonCfg();
+  const set=(id,val)=>{ const el=g(id); if(el) el.value=val; };
+  set('cj_modo', c.modo); set('cj_pin', c.pin); set('cj_auto', c.auto);
+  g('cj_usbBox')?.classList.toggle('hidden', c.modo!=='usb');
+  g('cj_opciones')?.classList.toggle('hidden', c.modo==='off');
+  const st = g('cj_usbStatus');
+  if(st){
+    st.textContent = S.cajon.connected ? 'Cajón USB conectado ✅'
+      : serialSupported() ? 'No conectado — toca Conectar y elige el puerto del cajón'
+      : 'Este navegador no abre puertos USB: usa Chrome o Edge en computadora';
+    st.className = 'text-xs ' + (S.cajon.connected ? 'text-emerald-600 font-semibold' : 'text-slate-400');
+  }
+  g('cj_btnCon')?.classList.toggle('hidden', !!S.cajon.connected);
+  g('cj_btnDes')?.classList.toggle('hidden', !S.cajon.connected);
+  /* Botón «Cajón» de la pantalla de venta: solo si hay cajón */
+  const b = g('btnCajon');
+  if(b){ b.classList.toggle('hidden', c.modo==='off'); b.classList.toggle('flex', c.modo!=='off'); }
+  const h = g('atajosCaja');
+  if(h) h.textContent = 'F1 buscar · F4 efectivo · F2 tarjeta · F3 mixto · Enter confirma' + (c.modo!=='off' ? ' · F9 cajón' : '');
+}
+if(serialSupported()){
+  navigator.serial.addEventListener('disconnect', e=>{
+    if(S.cajon.port && e.target===S.cajon.port){
+      Object.assign(S.cajon, {writer:null, connected:false});
+      pintarCajonUI();
+      showToast('Se desconectó el cajón','warning');
+    }
+  });
+  navigator.serial.addEventListener('connect', e=>{
+    if(cajonCfg().modo==='usb' && !S.cajon.connected && esPuertoDelCajon(e.target)){
+      autoReconnectCajon().then(ok=>{ if(ok) showToast('Cajón reconectado','success'); });
+    }
+  });
+}
+setTimeout(()=>{ pintarCajonUI(); autoReconnectCajon(); }, 700);
+
+/* ── ¿Imprimir el ticket de ESTA venta? ──
+   Empieza con lo que diga «Imprimir el ticket al cobrar» (Hardware) y el
+   cajero lo puede cambiar en la ventana de cobro (botón o tecla P). */
+S.imprimirTicket = true;
+function pintarImprimirTicket(){
+  const b = g('payPrintToggle'); if(!b) return;
+  const on = !!S.imprimirTicket;
+  b.setAttribute('aria-pressed', on ? 'true' : 'false');
+  b.className = 'w-full flex items-center justify-between gap-2 rounded-xl px-4 py-2.5 mb-3 text-sm font-semibold border min-h-[44px] transition '
+    + (on ? 'bg-indigo-50 border-indigo-200 text-indigo-700' : 'bg-slate-50 border-slate-200 text-slate-400');
+  const i = g('payPrintIcon'); if(i) i.className = 'fa-solid ' + (on ? 'fa-print' : 'fa-ban') + ' mr-2';
+  const t = g('payPrintLbl');  if(t) t.textContent = on ? 'Imprimir ticket: Sí' : 'Imprimir ticket: No';
+}
+function toggleImprimirTicket(){
+  S.imprimirTicket = !S.imprimirTicket;
+  pintarImprimirTicket();
+}
+/* Tecla P con la ventana de cobro abierta (los campos de monto solo aceptan números) */
+document.addEventListener('keydown', e=>{
+  if((e.key||'').toLowerCase()!=='p' || e.ctrlKey || e.metaKey || e.altKey) return;
+  if(g('payModal')?.classList.contains('hidden')) return;
+  const t = e.target;
+  if(t && t.tagName==='INPUT' && t.type!=='number') return;   // por si algún día hay campos de texto
+  e.preventDefault();
+  toggleImprimirTicket();
+});
+
 /* ── Formato ──
    A doble ancho caben 16 caracteres por línea en una POS-58 (no 32). */
 /* Las funciones de formato leen las columnas del papel elegido (58/80 mm)
@@ -2368,6 +2636,7 @@ function openHardwareModal(){
   updateHwRemoteLine();
   g('hardwareModal').classList.remove('hidden');
   if(typeof pintarTerminalMP==='function') pintarTerminalMP();   // Mercado Pago Point
+  pintarCajonUI();                                                // cajón de dinero
 }
 function hideHardwareModal(){ g('hardwareModal').classList.add('hidden'); }
 function updateHwRemoteLine(){
@@ -2770,6 +3039,8 @@ async function showPaymentModal(metodo){
   g('cashInput').value=''; g('changeDisplay').textContent='$0.00';
   g('mixedCashInput').value=''; g('mixedCardInput').value=''; g('mixedStatus').textContent='';
   S.tipoTarjeta = 'tarjeta';   // cada cobro empieza en débito/crédito; el cajero cambia a Vales si aplica
+  S.imprimirTicket = !!prnCfg().autoPrint;   // lo que diga Hardware; el cajero lo cambia aquí si quiere
+  pintarImprimirTicket();
   S.payMethod=metodo; selectPayMethod(metodo);
   /* Quick amounts buttons */
   const quicks=[total,Math.ceil(total/10)*10,Math.ceil(total/50)*50,Math.ceil(total/100)*100];
@@ -2937,7 +3208,9 @@ async function processPayment(){
     /* Comisión cobrada por pagar con tarjeta (sale en el ticket y en el historial) */
     comision: fee || 0,
     comisionPct: fee ? comisionActualPct() : 0,
-    tipoTarjeta: cardPortion > 0 ? ((hayTiposDeTarjeta() && S.tipoTarjeta === 'vales') ? 'vales' : 'tarjeta') : null
+    tipoTarjeta: cardPortion > 0 ? ((hayTiposDeTarjeta() && S.tipoTarjeta === 'vales') ? 'vales' : 'tarjeta') : null,
+    /* ¿Se imprime el ticket de esta venta? (botón «Imprimir ticket» de la ventana de cobro) */
+    imprimir: !!S.imprimirTicket
   };
 
   /* ── Mercado Pago Point: la parte con tarjeta se cobra en la terminal física ── */
@@ -3018,7 +3291,12 @@ async function finalizarVenta(pago, opts={}){
       pushSaleCompletedToDisplay(total);
       hidePayModal();
     }
-    showReceiptModal({...saleData, timestamp:now});   // imprime solo si la impresora está conectada
+    /* Cajón de dinero: se abre ANTES del ticket para no hacer esperar al cajero.
+       Solo en la venta que se está cobrando ahora (no en una que la terminal
+       aprobó tarde, cuando la caja ya está en otra cosa). */
+    if(limpiar && debeAbrirCajon(saleData)) abrirCajon('venta');
+    /* Ticket: se imprime si el cajero dejó «Imprimir ticket: Sí» */
+    showReceiptModal({...saleData, timestamp:now}, {imprimir: pago.imprimir});
     if(limpiar){
       S.cart=[]; S.discount=null; renderCart();
       hide('stateProduct'); show('stateWelcome');
@@ -3251,16 +3529,20 @@ function imprimirEnNavegador(lines){
   setTimeout(()=>{ window.print(); setTimeout(volver, 1500); }, 60);
 }
 
-function showReceiptModal(sale){
+function showReceiptModal(sale, opts={}){
   _lastReceipt=sale;
   const cfg = prnCfg();
   g('receiptPrintArea').innerHTML =
     `<div class="tk-wrap"><div class="tk tk-screen p${paperMM(cfg)}${cfg.bigFont?' big':''}">${ticketHTML(ticketLines(sale))}</div></div>`;
   g('receiptModal').classList.remove('hidden');
-  /* Se imprime solo al cobrar si la impresora está conectada */
-  if(S.printer.connected && prnCfg().autoPrint){
-    printEscPos(sale).catch(e=>showToast('No se pudo imprimir: '+e.message+'. Toca Imprimir para reintentar.','error'));
-  }
+  /* ¿Imprimir? Lo que eligió el cajero en la ventana de cobro; si no viene
+     (ventas viejas pendientes), lo que diga Hardware. */
+  const imprimir = typeof opts.imprimir==='boolean' ? opts.imprimir : !!prnCfg().autoPrint;
+  if(!imprimir) return;
+  const fallo = e=>showToast('No se pudo imprimir: '+e.message+'. Toca Imprimir para reintentar.','error');
+  if(S.printer.connected){ printEscPos(sale).catch(fallo); return; }
+  /* La impresora se desconectó: intenta reconectar sola (sin pedir permiso) y luego imprime */
+  if(printerSupported()) autoReconnectPrinter().then(ok=>{ if(ok) printEscPos(sale).catch(fallo); });
 }
 function hideReceiptModal(){ g('receiptModal').classList.add('hidden'); }
 function receiptText(sale){ return ticketPlainText(ticketLines(sale)); }
@@ -5670,7 +5952,7 @@ document.addEventListener('keydown',e=>{
      && ![...document.querySelectorAll('[id$="Modal"]')].some(m=>!m.classList.contains('hidden'))){
     g('searchInput').focus();
   }
-  if(modoVenta() && /^F[1-8]$/.test(e.key)){
+  if(modoVenta() && /^F[1-9]$/.test(e.key)){
     const adminAbierto = !g('adminPanel').classList.contains('hidden');
     /* ¿Hay otra ventana abierta (producto, descuento, turno…)? Entonces no */
     const otraVentana = [...document.querySelectorAll('[id$="Modal"]')]
@@ -5680,6 +5962,7 @@ document.addEventListener('keydown',e=>{
     if(metodo){ e.preventDefault(); if(!g('receiptModal').classList.contains('hidden')) hideReceiptModal(); cobrar(metodo); return; }
     if(e.key==='F1'){ e.preventDefault(); hidePayModal(); const si=g('searchInput'); si.focus(); si.select(); return; }
     if(e.key==='F8'){ e.preventDefault(); if(g('payModal').classList.contains('hidden')) clearCart(); return; }
+    if(e.key==='F9'){ e.preventDefault(); if(!e.repeat) abrirCajon('manual'); return; }
   }
 });
 
