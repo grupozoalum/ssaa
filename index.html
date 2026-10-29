@@ -170,6 +170,10 @@
           class="bg-indigo-600 hover:bg-indigo-700 active:bg-indigo-800 text-white px-3.5 rounded-xl transition flex items-center gap-2 text-sm font-medium min-w-[44px] min-h-[44px]">
           <i class="fa-solid fa-camera"></i><span class="hidden sm:inline">Escanear</span>
         </button>
+        <button id="btnChecarPrecio" onclick="toggleChecarPrecio()" title="Checar precio sin agregar a la venta (F7)" aria-pressed="false"
+          class="bg-amber-100 hover:bg-amber-200 text-amber-800 px-3.5 rounded-xl transition flex items-center gap-2 text-sm font-semibold min-w-[44px] min-h-[44px]">
+          <i class="fa-solid fa-tag"></i><span class="hidden md:inline">Checar precio</span>
+        </button>
         <button id="btnNuevoProducto" onclick="showProductModal(false)" title="Dar de alta un producto nuevo"
           class="hidden max-sm:!hidden bg-emerald-600 hover:bg-emerald-700 active:bg-emerald-800 text-white px-3.5 rounded-xl transition items-center gap-2 text-sm font-medium min-w-[44px] min-h-[44px]">
           <i class="fa-solid fa-square-plus"></i><span class="hidden lg:inline">Nuevo</span>
@@ -281,6 +285,10 @@
       </div>
 
       <!-- Welcome -->
+      <div id="checarBanner" class="hidden mb-3 bg-amber-100 border-2 border-amber-400 text-amber-900 rounded-xl px-4 py-3 flex items-center justify-between gap-3">
+        <p class="text-sm font-bold"><i class="fa-solid fa-tag mr-1.5"></i>Checar precio: escanea o busca el producto. <span class="font-normal">No se agrega a la venta.</span></p>
+        <button onclick="toggleChecarPrecio(false)" class="text-xs font-semibold bg-white/70 hover:bg-white px-3 py-1.5 rounded-lg shrink-0 min-h-[36px]">Cancelar (Esc)</button>
+      </div>
       <div id="stateWelcome" class="flex flex-col items-center justify-center py-12 sm:py-16 text-center px-4">
         <div class="text-5xl sm:text-6xl mb-4">🔍</div>
         <h2 class="text-lg sm:text-xl font-bold text-slate-600 mb-2">Consulta de precios</h2>
@@ -382,7 +390,7 @@
           <i class="fa-solid fa-trash"></i>Vaciar venta <kbd class="kbd-key kbd-light">F8</kbd>
         </button>
       </div>
-      <p id="atajosCaja" class="text-[10px] text-center text-slate-400 pt-1">F1/F10 buscar · F4 efectivo · F2 tarjeta · F3 mixto · Enter confirma · F9 cajón</p>
+      <p id="atajosCaja" class="text-[10px] text-center text-slate-400 pt-1">F1/F10 buscar · F7 checar precio · F4 efectivo · F2 tarjeta · F3 mixto · Enter confirma · F9 cajón</p>
     </div>
   </aside>
 
@@ -2649,10 +2657,10 @@
 <!-- ▌TICKET PARA IMPRIMIR ▐ — solo se ve al imprimir desde el navegador -->
 <div id="ticketPrint" aria-hidden="true"></div>
 
-<script src="app.js?v=20261029k"></script>
-<script src="mp-point.js?v=20261029k"></script>
-<script src="importar-excel.js?v=20261029k"></script>
-<script src="promos.js?v=20261029k"></script>
-<script src="devoluciones.js?v=20261029k"></script>
+<script src="app.js?v=20261029l"></script>
+<script src="mp-point.js?v=20261029l"></script>
+<script src="importar-excel.js?v=20261029l"></script>
+<script src="promos.js?v=20261029l"></script>
+<script src="devoluciones.js?v=20261029l"></script>
 </body>
 </html>

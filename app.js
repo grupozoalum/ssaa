@@ -1378,7 +1378,8 @@ function selectFromDropdown(barcode) {
   const promo = String(barcode).startsWith(PROMO_PREFIJO) ? promoPorCodigo(barcode) : null;
   g('searchInput').value = promo ? promo.name : barcode;
   /* Elegida de la lista = el cajero ya la escogió: entra directo a la venta */
-  if(promo && modoVenta()){ agregarEscaneado(promo); return; }
+  if(promo && modoVenta() && !S.checarPrecio){ agregarEscaneado(promo); return; }
+  if(promo && S.checarPrecio){ S.checarPrecio = false; pintarChecarPrecio(); showProduct(promo); return; }
   doSearch(barcode);
 }
 document.addEventListener('click', e => { if(!e.target.closest('#searchWrapper')) g('searchDropdown')?.classList.add('hidden'); });
@@ -1457,7 +1458,10 @@ async function doSearch(queryOverride){
   }
   /* Vendiendo: un código exacto entra directo a la venta.
      Granel (pide peso) y búsquedas por nombre muestran la tarjeta para confirmar. */
-  if(modoVenta() && exacto && !match.isBulk) agregarEscaneado(match);
+  /* ¿Era solo para checar el precio? Se muestra y NO se agrega (y se apaga el modo) */
+  const soloPrecio = !!S.checarPrecio;
+  if(soloPrecio){ S.checarPrecio = false; pintarChecarPrecio(); }
+  if(modoVenta() && exacto && !match.isBulk && !soloPrecio) agregarEscaneado(match);
   else {
     showProduct(match);
     /* Granel: el cursor va directo al peso; Enter lo agrega */
@@ -2192,14 +2196,21 @@ async function stopSc(instKey){
    (no need to have the search box focused) and triggers a search.
 ════════════════════════════════════ */
 const HW = { buffer:'', lastKeyTs:0, timer:null, MAX_GAP:60, MIN_LEN:3 };
+/* Campos de la pantalla de venta donde el lector SÍ cuenta como escaneo
+   (si el cursor quedó en la cantidad o en el monto, el escaneo agrega el
+   producto y esos dígitos se borran de ese campo). */
+const CAMPOS_ESCANEO = ['searchInput','qtyInput','cashInput','mixedCashInput','mixedCardInput'];
 function initHardwareScanner(){
+  /* En fase de CAPTURA: el lector se atiende antes que el Enter del campo
+     (así un escaneo no dispara «Agregar» con una cantidad de 13 dígitos). */
   document.addEventListener('keydown', e => {
     if(window._displayMode) return;
     // Ignore modifier-only combos
     if(e.ctrlKey || e.altKey || e.metaKey) return;
-    const tag = document.activeElement?.tagName;
-    const typingInField = ['INPUT','TEXTAREA','SELECT'].includes(tag) && document.activeElement.id !== 'searchInput';
-    // Allow capture even if searchInput is focused (harmless) but skip other text fields
+    const act = document.activeElement;
+    const tag = act?.tagName;
+    const typingInField = ['INPUT','TEXTAREA','SELECT'].includes(tag) && !CAMPOS_ESCANEO.includes(act.id);
+    // Otros campos (formularios, admin): ahí el lector escribe normal
     if(typingInField) { resetHwBuffer(); return; }
 
     const now = Date.now();
@@ -2212,12 +2223,29 @@ function initHardwareScanner(){
         resetHwBuffer();
         flashHwBadge();
         e.preventDefault();
+        e.stopPropagation();   // que el Enter no llegue al campo (Agregar / Cobrar)
+        /* Si el cursor estaba en cantidad o monto, se quitan los dígitos que el lector escribió ahí */
+        if(act && act.id !== 'searchInput' && CAMPOS_ESCANEO.includes(act.id)){
+          const v = String(act.value||'');
+          if(v.endsWith(code)) act.value = v.slice(0, -code.length);
+          else if(v === code) act.value = '';
+          act.blur();
+        }
         /* El código escaneado NO se queda en el buscador: si quedara, el
            siguiente escaneo se pegaría al anterior y «no existiría». */
         const si = g('searchInput');
         si.value = '';
         g('searchDropdown')?.classList.add('hidden');
-        Promise.resolve(doSearch(code)).finally(()=>{ if(si.value.trim()===code) si.value=''; });
+        /* Escanear mientras se cobra: se cierra la ventana de cobro para que el
+           total se recalcule con lo nuevo (si no, se cobraría el total viejo) */
+        if(modoVenta() && !S.checarPrecio && !g('payModal').classList.contains('hidden') && !S.mpCobro){
+          hidePayModal();
+          S._reabrirCobro = true;
+        }
+        Promise.resolve(doSearch(code)).finally(()=>{
+          if(si.value.trim()===code) si.value='';
+          if(S._reabrirCobro){ S._reabrirCobro = false; showToast('Se agregó a la venta. Vuelve a cobrar con el total nuevo.','info'); }
+        });
         if(navigator.vibrate) navigator.vibrate(30);
       }
       return;
@@ -2233,7 +2261,38 @@ function initHardwareScanner(){
       clearTimeout(HW.timer);
       HW.timer = setTimeout(resetHwBuffer, 400);
     }
-  });
+  }, true);
+}
+
+/* ════════════════════════════════════
+   CHECAR PRECIO
+   Vendiendo, escanear = se agrega a la venta. Para solo VER el precio
+   (el cliente pregunta cuánto cuesta), se activa «Checar precio»
+   (botón o tecla F7): el siguiente producto se muestra sin agregarse.
+   Es de un solo uso: después vuelve solo a modo venta. Esc cancela.
+════════════════════════════════════ */
+S.checarPrecio = false;
+function toggleChecarPrecio(on){
+  S.checarPrecio = typeof on === 'boolean' ? on : !S.checarPrecio;
+  pintarChecarPrecio();
+  if(S.checarPrecio){
+    hide('stateProduct'); hide('stateNotFound');
+    const si = g('searchInput'); si.value=''; if(!isMobile()) si.focus();
+    beep('scan');
+  }
+}
+function pintarChecarPrecio(){
+  const on = !!S.checarPrecio;
+  const b = g('btnChecarPrecio');
+  if(b){
+    b.classList.toggle('ring-4', on); b.classList.toggle('ring-amber-300', on);
+    b.classList.toggle('bg-amber-500', on); b.classList.toggle('bg-amber-100', !on);
+    b.classList.toggle('text-white', on); b.classList.toggle('text-amber-800', !on);
+    b.setAttribute('aria-pressed', on ? 'true' : 'false');
+  }
+  g('checarBanner')?.classList.toggle('hidden', !on);
+  const si = g('searchInput');
+  if(si) si.placeholder = on ? '🔎 Escanea o busca el producto para ver su precio…' : 'Buscar producto, promoción o código… (F10)';
 }
 function resetHwBuffer(){ HW.buffer=''; }
 function flashHwBadge(){
@@ -2872,7 +2931,7 @@ function pintarCajonUI(){
   const b = g('btnCajon');
   if(b){ b.classList.toggle('hidden', c.modo==='off'); b.classList.toggle('flex', c.modo!=='off'); }
   const h = g('atajosCaja');
-  if(h) h.textContent = 'F1/F10 buscar · F4 efectivo · F2 tarjeta · F3 mixto · Enter confirma' + (c.modo!=='off' ? ' · F9 cajón' : '');
+  if(h) h.textContent = 'F1/F10 buscar · F7 checar precio · F4 efectivo · F2 tarjeta · F3 mixto · Enter confirma' + (c.modo!=='off' ? ' · F9 cajón' : '');
 }
 if(serialSupported()){
   navigator.serial.addEventListener('disconnect', e=>{
@@ -6579,6 +6638,7 @@ document.addEventListener('keydown',e=>{
     hideEntryModal(); hideExpenseModal(); hideShiftDetail(); hideSyncModal();
     hideBloqueo(); hideScheduleModal(); hideAccessModal();
     if(typeof hidePromoModal==='function') hidePromoModal();
+    if(S.checarPrecio) toggleChecarPrecio(false);
     if(typeof cerrarVentasTurno==='function'){ cerrarDevolucion(); cerrarVentasTurno(); }
     if(!g('confirmModal').classList.contains('hidden')) _confirmResolve(false);
     closeMobileCart();
@@ -6591,6 +6651,14 @@ document.addEventListener('keydown',e=>{
      && g('adminPanel').classList.contains('hidden')
      && ![...document.querySelectorAll('[id$="Modal"]')].some(m=>!m.classList.contains('hidden'))){
     g('searchInput').focus();
+  }
+  /* F7 = checar precio (el siguiente escaneo solo muestra el precio) */
+  if(modoVenta() && e.key==='F7'){
+    e.preventDefault();
+    if(!g('adminPanel').classList.contains('hidden')) return;
+    hidePayModal(); hideReceiptModal();
+    toggleChecarPrecio();
+    return;
   }
   /* F10 = ir al buscador (también funciona con ventanas de cobro abiertas) */
   if(modoVenta() && e.key==='F10'){
