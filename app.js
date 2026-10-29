@@ -2793,16 +2793,34 @@ document.addEventListener('keydown', e=>{
 function hidePayModal(){ g('payModal').classList.add('hidden'); }
 function setQuick(v){ g('cashInput').value=v; calcChange(); }
 
+/* ── Comisión que se le suma al cliente al pagar con tarjeta ──
+   La define el dueño en Hardware → «Terminal Mercado Pago de esta caja».
+   Se guarda por caja (este navegador) y por negocio. Sin configurar = 4 %,
+   como antes. 0 = no se cobra comisión. */
+const COMISION_TARJETA_DEFAULT = 4;
+const COMISION_TARJETA_MAX = 15;
+const comisionTarjetaKey = () => 'posComisionTarjeta_v1:' + (TENANT || '');
+function comisionTarjetaPct(){
+  try{
+    const v = localStorage.getItem(comisionTarjetaKey());
+    if(v !== null && v !== '' && isFinite(+v)) return Math.min(COMISION_TARJETA_MAX, Math.max(0, +v));
+  }catch(e){}
+  return COMISION_TARJETA_DEFAULT;
+}
+const redondear2 = n => Math.round((Number(n) || 0) * 100) / 100;
+
 function recalcTotalConComision() {
   const {total} = cartTotals();
+  const pct = comisionTarjetaPct();
   let fee = 0;
   if (S.payMethod === 'card') {
-    fee = total * 0.04;
+    fee = redondear2(total * pct / 100);
   } else if (S.payMethod === 'mixed') {
     const cardAmt = parseFloat(g('mixedCardInput').value) || 0;
-    fee = cardAmt * 0.04;
+    fee = redondear2(cardAmt * pct / 100);
   }
-  const grandTotal = total + fee;
+  const grandTotal = redondear2(total + fee);
+  if(g('payFeePct')) g('payFeePct').textContent = String(pct);
   g('payFeeRow').classList.toggle('hidden', fee === 0);
   g('payFeeAmt').textContent = '+' + fmt(fee);
   g('payTotal').textContent = fmt(grandTotal);

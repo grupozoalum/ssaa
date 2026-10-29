@@ -42,15 +42,36 @@ function leerTerminalMP(){
 }
 function guardarTerminalMP(){
   if(!TENANT){ showToast('Inicia sesión primero','warning'); return; }
+
+  /* Comisión por pago con tarjeta: solo el dueño la cambia */
+  const inpPct = g('mp_comision');
+  let pctMsg = '';
+  if(inpPct && S.isAdmin){
+    const raw = String(inpPct.value || '').trim().replace(',', '.');
+    const pct = raw === '' ? 0 : Number(raw);
+    if(!isFinite(pct) || pct < 0 || pct > COMISION_TARJETA_MAX){
+      showToast('La comisión debe ser un número entre 0 y ' + COMISION_TARJETA_MAX + ' %','error'); beep('error'); return;
+    }
+    const pct2 = Math.round(pct * 100) / 100;
+    try{ localStorage.setItem(comisionTarjetaKey(), String(pct2)); }
+    catch(e){ showToast('No se pudo guardar en este navegador','error'); return; }
+    pctMsg = pct2 > 0 ? ' · comisión ' + pct2 + ' %' : ' · sin comisión';
+  }
+
   const v = (g('mp_deviceId').value || '').replace(/\s+/g,'');
-  if(!v){ olvidarTerminalMP(); return; }
+  if(!v){
+    try{ localStorage.removeItem(mpDevKey()); }catch(e){}
+    pintarTerminalMP();
+    showToast(pctMsg ? 'Guardado' + pctMsg + '. Esta caja no tiene terminal asignada.' : 'Esta caja ya no tiene terminal asignada','info');
+    return;
+  }
   if(!MP_ID_RE.test(v) || !v.includes('__')){
     showToast('Ese ID no parece de una terminal. Formato: MODELO__NUMERODESERIE','error'); beep('error'); return;
   }
   try{ localStorage.setItem(mpDevKey(), v); }
   catch(e){ showToast('No se pudo guardar en este navegador','error'); return; }
   pintarTerminalMP();
-  showToast('Terminal asignada a esta caja ✅','success');
+  showToast('Terminal asignada a esta caja' + pctMsg + ' ✅','success');
 }
 function olvidarTerminalMP(){
   try{ localStorage.removeItem(mpDevKey()); }catch(e){}
@@ -72,6 +93,20 @@ function pintarTerminalMP(){
     : 'Sin terminal: esta caja no podrá cobrar con tarjeta ni mixto.';
   st.className = 'text-xs ' + (dev ? 'text-emerald-600' : 'text-amber-600');
   g('mpTerminalDot').className = 'w-2.5 h-2.5 rounded-full shrink-0 ' + (dev ? 'bg-emerald-400' : 'bg-gray-300');
+
+  /* Comisión: el dueño la edita; el vendedor solo la ve */
+  const inpPct = g('mp_comision');
+  if(inpPct){
+    if(document.activeElement !== inpPct) inpPct.value = comisionTarjetaPct();
+    inpPct.disabled = !S.isAdmin;
+    inpPct.classList.toggle('opacity-60', !S.isAdmin);
+  }
+  const hint = g('mp_comisionHint');
+  if(hint){
+    hint.textContent = S.isAdmin
+      ? 'Se suma al total cuando el cliente paga con tarjeta (en mixto, solo a la parte con tarjeta). Pon 0 para no cobrar comisión.'
+      : 'Solo el dueño del negocio puede cambiar este porcentaje.';
+  }
 }
 
 /* Cobros pendientes en este dispositivo */
