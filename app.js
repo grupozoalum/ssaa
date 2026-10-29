@@ -867,6 +867,7 @@ auth.onAuthStateChanged(async user => {
     g('hwBtn').classList.remove('hidden');
     g('ventasBtn')?.classList.remove('hidden'); g('ventasBtn')?.classList.add('flex');
     pintarPermisosUI();
+    aplicarTamLetra();
     restoreLocalCart();
     checkCurrentShift();
     if(S.isAdmin){
@@ -888,6 +889,7 @@ auth.onAuthStateChanged(async user => {
     g('hwBtn').classList.add('hidden');
     g('ventasBtn')?.classList.add('hidden'); g('ventasBtn')?.classList.remove('flex');
     g('btnNuevoProducto')?.classList.add('hidden'); g('btnNuevoProducto')?.classList.remove('flex');
+    aplicarTamLetra();
     S.currentShift=null;
     tag.textContent='Consulta de Precios';
     tag.className='text-[10px] sm:text-xs bg-white/15 border border-white/20 px-2 py-0.5 rounded-full';
@@ -1480,17 +1482,38 @@ function agregarEscaneado(p){
   if(!isMobile()) g('searchInput').focus();
 }
 
-window._bulkUnit = 'kg';
-function setBulkUnit(unit) {
-  window._bulkUnit = unit;
+/* Granel: el cajero escribe el PRECIO que marca la báscula ($), o el peso (kg / g).
+   La última unidad elegida se recuerda en esta caja. Por defecto: precio ($). */
+const BULK_KEY = 'posBulkUnit_v1';
+window._bulkUnit = (()=>{ try{ const u = localStorage.getItem(BULK_KEY); return ['$','kg','g'].includes(u) ? u : '$'; }catch(e){ return '$'; } })();
+function setBulkUnit(unit, sinFoco) {
+  window._bulkUnit = ['$','kg','g'].includes(unit) ? unit : '$';
+  try{ localStorage.setItem(BULK_KEY, window._bulkUnit); }catch(e){}
   const act = 'flex-1 py-2 rounded-lg text-sm font-bold border-2 border-indigo-500 bg-indigo-50 text-indigo-700 transition';
   const inact = 'flex-1 py-2 rounded-lg text-sm font-bold border-2 border-slate-200 bg-slate-50 text-slate-500 transition';
-  g('btnUnitKg').className = (unit === 'kg') ? act : inact;
-  g('btnUnitG').className = (unit === 'g') ? act : inact;
+  if(g('btnUnitPeso')) g('btnUnitPeso').className = (window._bulkUnit === '$') ? act : inact;
+  g('btnUnitKg').className = (window._bulkUnit === 'kg') ? act : inact;
+  g('btnUnitG').className = (window._bulkUnit === 'g') ? act : inact;
   
   const qtyInp = g('qtyInput');
-  qtyInp.placeholder = (unit === 'g') ? 'Ej: 500' : 'Ej: 1.5';
-  qtyInp.focus();
+  qtyInp.placeholder = window._bulkUnit === '$' ? 'Ej: 25' : (window._bulkUnit === 'g') ? 'Ej: 500' : 'Ej: 1.5';
+  actualizarHintGranel();
+  if(!sinFoco) qtyInp.focus();
+}
+/* Debajo del campo: «$25 = 0.833 kg» para que el cajero confirme */
+function actualizarHintGranel(){
+  const h = g('bulkHint'); if(!h) return;
+  const p = S.curProduct;
+  if(!p || !p.isBulk){ h.classList.add('hidden'); return; }
+  const v = parseFloat(g('qtyInput').value);
+  h.classList.remove('hidden');
+  if(!(v > 0)){
+    h.textContent = window._bulkUnit === '$' ? 'Escribe el precio que marca la báscula' : 'Escribe el peso';
+    return;
+  }
+  const precio = Number(p.price)||0;
+  if(window._bulkUnit === '$') h.textContent = precio>0 ? `${fmt(v)} = ${round3(v/precio)} kg` : 'Este producto no tiene precio por kg';
+  else { const kg = window._bulkUnit === 'g' ? v/1000 : v; h.textContent = `${round3(kg)} kg = ${fmt(Math.round(kg*precio*100)/100)}`; }
 }
 
 function showProduct(p){
@@ -1506,7 +1529,7 @@ function showProduct(p){
     g('qtyMinusBtn').classList.add('hidden');
     g('qtyPlusBtn').classList.add('hidden');
     qtyInp.value = '';
-    setBulkUnit('kg'); // Arranca en Kilos por defecto
+    setBulkUnit(window._bulkUnit, true); // la última unidad usada (por defecto: precio de la báscula)
   } else {
     g('pdPrice').textContent = fmt(p.price);
     g('bulkUnitArea').classList.add('hidden');
@@ -1588,15 +1611,21 @@ function addToCart(silencioso){
   
   const rawQty = g('qtyInput').value;
   if(S.curProduct.isBulk && !rawQty) {
-    showToast('Ingresa el peso o cantidad', 'warning');
+    showToast(window._bulkUnit === '$' ? 'Escribe el precio que marca la báscula' : 'Ingresa el peso o cantidad', 'warning');
     g('qtyInput').focus();
     return;
   }
   
   // Si eligió 'g' (gramos), dividimos entre 1000 para que se calcule por kilo
   let parsedQty = parseFloat(rawQty) || 1;
+  let montoBascula = null;   // granel por precio: el importe es EXACTAMENTE lo que marcó la báscula
   if (S.curProduct.isBulk && window._bulkUnit === 'g') {
     parsedQty = parsedQty / 1000;
+  } else if (S.curProduct.isBulk && window._bulkUnit === '$') {
+    const precioKg = Number(S.curProduct.price)||0;
+    if(!(precioKg > 0)){ showToast('Este producto no tiene precio por kilo. Escribe el peso.','warning'); return; }
+    montoBascula = Math.round(parsedQty*100)/100;
+    parsedQty = montoBascula / precioKg;
   }
   
   if(!(parsedQty > 0)){ showToast('La cantidad debe ser mayor a cero','warning'); return; }
@@ -1625,8 +1654,9 @@ function addToCart(silencioso){
   }
 
   if(ex){
+    const antes = ex.subtotal;
     ex.quantity = round3(ex.quantity + qty);
-    ex.subtotal = ex.price * ex.quantity;
+    ex.subtotal = montoBascula!=null ? Math.round((antes + montoBascula)*100)/100 : ex.price * ex.quantity;
   } else {
     S.cart.push({
       barcode: p.barcode, 
@@ -1634,7 +1664,7 @@ function addToCart(silencioso){
       price: p.price, 
       cost: p.isPromo ? costoPromo(p) : (Number(p.cost)||0), 
       quantity: qty, 
-      subtotal: p.price * qty, 
+      subtotal: montoBascula!=null ? montoBascula : p.price * qty, 
       isBulk: p.isBulk,
       /* Promoción: lo que trae, para descontar cada producto del inventario */
       ...(p.isPromo ? { isPromo:true, promoId:p.promoId, promoCode:p.code||'',
@@ -1917,6 +1947,10 @@ function toggleNavMore(ev){
   if(vis('btnNuevoProducto')) html += item('fa-square-plus', 'Dar de alta un producto', 'showProductModal(false)');
   if(vis('ventasBtn')) html += item('fa-receipt', 'Ventas del turno · devoluciones', 'abrirVentasTurno()');
   if(vis('hwBtn'))   html += item('fa-print', S.printer.connected ? 'Impresora · conectada' : 'Impresora y hardware', 'openHardwareModal()');
+  html += `<div class="px-4 py-2 flex items-center justify-between gap-2"><span class="text-sm text-slate-700"><i class="fa-solid fa-text-height w-5 text-slate-400"></i> Letra</span>`
+       +  `<span class="flex items-center gap-1"><button onclick="event.stopPropagation();cambiarTamLetra(-1);toggleNavMore();toggleNavMore()" class="w-9 h-9 rounded-lg bg-slate-100 font-bold text-sm">A−</button>`
+       +  `<span class="text-xs font-bold text-slate-600 w-10 text-center">${Math.round(TAM_LETRA[tamLetraIdx()].f*100)}%</span>`
+       +  `<button onclick="event.stopPropagation();cambiarTamLetra(1);toggleNavMore();toggleNavMore()" class="w-9 h-9 rounded-lg bg-slate-100 font-bold text-base">A+</button></span></div>`;
   html += item(S.soundOn?'fa-volume-high':'fa-volume-xmark', S.soundOn?'Silenciar sonidos':'Activar sonidos', 'toggleSound()');
   html += item('fa-cloud', net ? 'Sincronización' : 'Sin internet · pendientes', 'openSyncModal()');
   if(vis('navAdminBtn')) html += item('fa-chart-line', 'Panel de control', 'openAdmin()');
@@ -3806,7 +3840,7 @@ const TICKET_CSS = `
   @page{margin:0}
   html,body{height:auto!important;min-height:0!important;overflow:visible!important;background:#fff!important;margin:0!important;padding:0!important}
   body>*:not(#ticketPrint){display:none!important}
-  #ticketPrint{display:block!important;position:static!important;visibility:visible!important}
+  #ticketPrint{display:block!important;position:static!important;visibility:visible!important;margin:0 auto!important}
   #ticketPrint *{color:#000!important;border-color:#000!important}
 }`;
 (function injectTicketCSS(){
@@ -3836,7 +3870,10 @@ function printLinesEscPos(lines){
     await applyPrinterSettings();
     const cfg = prnCfg();
     const body = cfg.bigFont ? 'big' : 'normal';
-    const parts = [];
+    /* Centrado automático: cada renglón mide exactamente el ancho del papel
+       elegido y la impresora lo centra (ESC a 1). Si el área de impresión es
+       más ancha que el ticket, queda en medio en lugar de pegado a la izquierda. */
+    const parts = [new Uint8Array([0x1B,0x61,0x01])];
     try{
       for(const x of lines){
         PRN_SIZE = (x.k==='store' || x.k==='total') ? 'big' : body;
@@ -3849,12 +3886,12 @@ function printLinesEscPos(lines){
         /* El estilo (tamaño) se calcula ahora, mientras PRN_SIZE es el de esta línea */
         const style = prnStyleBytes(cfg);
         txt.split('\n').forEach((ln, i, arr)=>{
-          if(ln){ parts.push(...style, encPrinter(ln, cfg.codepage)); }
+          if(ln){ parts.push(...style, encPrinter(ln.length < W ? ln.padEnd(W) : ln, cfg.codepage)); }
           if(i < arr.length-1) parts.push(new Uint8Array([0x0A]));
         });
       }
     } finally { PRN_SIZE = null; }
-    parts.push(...prnStyleBytes(cfg), prnEndBytes(cfg));
+    parts.push(...prnStyleBytes(cfg), new Uint8Array([0x1B,0x61,0x00]), prnEndBytes(cfg));
     await writeToPrinter(...parts);    // solo Uint8Array: se envía tal cual
   });
 }
@@ -4606,6 +4643,61 @@ async function saveProduct(){
     showToast(e.code==='existe' ? e.message+'. No se guardó.' : 'Error: '+e.message,'error');
   }finally{ if(btnG) btnG.disabled = false; }
 }
+/* ════════════════════════════════════
+   TAMAÑO DE LETRA (cada usuario, en este dispositivo)
+   Agranda TODO de forma proporcional (letras y espacios) para que nada se
+   encime ni se salga. Tope: 130 %. Botón «Aa» de la barra de arriba.
+════════════════════════════════════ */
+const TAM_LETRA = [
+  { f:1,    t:'Normal' },
+  { f:1.1,  t:'Grande' },
+  { f:1.2,  t:'Más grande' },
+  { f:1.3,  t:'Máxima' }
+];
+const tamLetraKey = () => 'posTamLetra_v1:' + (S.user?.uid || 'general');
+function tamLetraIdx(){
+  try{
+    const v = Number(localStorage.getItem(tamLetraKey()) ?? localStorage.getItem('posTamLetra_v1:general'));
+    return Number.isInteger(v) && v>=0 && v<TAM_LETRA.length ? v : 0;
+  }catch(e){ return 0; }
+}
+function aplicarTamLetra(){
+  const g = id => document.getElementById(id);   // se usa al cargar, antes de que exista el g global
+  const i = tamLetraIdx(), f = TAM_LETRA[i].f, r = document.documentElement;
+  r.style.setProperty('--pos-fs', f);
+  r.style.fontSize = f===1 ? '' : (16*f)+'px';     // todo lo que mide en rem crece parejo
+  if(f===1) r.removeAttribute('data-fs'); else r.setAttribute('data-fs', i);
+  const l = g('tamLetraLbl'); if(l) l.textContent = Math.round(f*100)+'%';
+  const m = g('tamLetraMenos'), M = g('tamLetraMas');
+  if(m) m.disabled = i<=0;
+  if(M) M.disabled = i>=TAM_LETRA.length-1;
+  const n = g('tamLetraNombre'); if(n) n.textContent = TAM_LETRA[i].t;
+}
+function cambiarTamLetra(d){
+  const i = Math.max(0, Math.min(TAM_LETRA.length-1, tamLetraIdx() + d));
+  try{ localStorage.setItem(tamLetraKey(), String(i)); }catch(e){}
+  aplicarTamLetra();
+  if(d) showToast(i===TAM_LETRA.length-1 && d>0 ? 'Letra al máximo ('+Math.round(TAM_LETRA[i].f*100)+'%)' : 'Tamaño de letra: '+TAM_LETRA[i].t,'info');
+}
+function toggleTamLetra(ev){
+  ev && ev.stopPropagation();
+  const p = g('tamLetraPanel'); if(!p) return;
+  p.classList.toggle('hidden');
+  aplicarTamLetra();
+}
+document.addEventListener('click', e=>{ if(!e.target.closest('#tamLetraPanel') && !e.target.closest('#fontBtn')) g('tamLetraPanel')?.classList.add('hidden'); });
+/* Las letras con tamaño fijo en px (etiquetas chiquitas) también crecen */
+(function cssTamLetra(){
+  const st = document.createElement('style');
+  st.id = 'tamLetraCSS';
+  st.textContent = [9,10,11,13,15].map(px =>
+    `html[data-fs] .text-\\[${px}px\\]{font-size:calc(${px}px * var(--pos-fs))}`).join('\n')
+    + '\nhtml[data-fs] body{overflow-x:hidden}'
+    + '\nhtml[data-fs] .truncate,html[data-fs] .break-anywhere{min-width:0}';
+  document.head.appendChild(st);
+})();
+aplicarTamLetra();
+
 /* ════════════════════════════════════
    PERMISOS DE LOS VENDEDORES  (negocios/{TENANT}/config/permisos)
    altaProductos: los vendedores pueden dar de alta productos NUEVOS
