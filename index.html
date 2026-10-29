@@ -24,6 +24,25 @@
   <script src="https://www.gstatic.com/firebasejs/10.7.1/firebase-firestore-compat.js"></script>
   <script src="https://www.gstatic.com/firebasejs/10.7.1/firebase-functions-compat.js"></script>
   <link rel="stylesheet" href="styles.css?v=20261010i"/>
+  <style>
+    /* Laptops con pantalla bajita: el menú del panel se compacta y se desplaza;
+       «Volver al POS» y «Cerrar sesión» quedan siempre a la vista. */
+    #adminSide .adm-nav{scrollbar-width:thin;scrollbar-color:#374151 transparent}
+    #adminSide .adm-nav::-webkit-scrollbar{width:6px}
+    #adminSide .adm-nav::-webkit-scrollbar-thumb{background:#374151;border-radius:3px}
+    @media (max-height: 860px){
+      #adminSide .adm-head{padding-top:.75rem;padding-bottom:.75rem}
+      #adminSide .atab{min-height:38px;padding-top:.4rem;padding-bottom:.4rem}
+      #adminSide .adm-foot button{min-height:38px;padding-top:.4rem;padding-bottom:.4rem}
+    }
+    @media (max-height: 680px){
+      #adminSide .adm-head p:last-child{display:none}
+      #adminSide .atab{min-height:34px;padding-top:.3rem;padding-bottom:.3rem}
+      #adminSide .adm-foot{display:flex;gap:.25rem}
+      #adminSide .adm-foot > *{margin-top:0!important}
+      #adminSide .adm-foot button{flex:1;justify-content:center;font-size:.75rem;padding-left:.25rem;padding-right:.25rem}
+    }
+  </style>
 </head>
 <body class="bg-slate-100 overflow-hidden">
 
@@ -484,8 +503,8 @@
 <div id="adminPanel" class="hidden fixed inset-0 z-50 flex flex-col md:flex-row" style="top:0">
 
   <!-- Desktop sidebar -->
-  <div class="hidden md:flex w-56 bg-gray-950 text-gray-300 flex-col shrink-0 shadow-2xl">
-    <div class="px-5 py-5 border-b border-gray-800">
+  <div id="adminSide" class="hidden md:flex w-56 bg-gray-950 text-gray-300 flex-col shrink-0 shadow-2xl min-h-0 h-full">
+    <div class="adm-head px-5 py-5 border-b border-gray-800 shrink-0">
       <div class="flex items-center gap-2 mb-1">
         <span class="w-2 h-2 rounded-full bg-emerald-400 inline-block animate-pulse"></span>
         <span class="text-xs text-emerald-400 font-semibold uppercase tracking-widest">Admin</span>
@@ -493,7 +512,7 @@
       <p class="font-bold text-white text-base">Panel de Control</p>
       <p id="adminEmailLabel" class="text-gray-500 text-xs mt-0.5 truncate"></p>
     </div>
-    <nav class="flex-1 px-3 py-3 space-y-0.5">
+    <nav class="adm-nav flex-1 min-h-0 overflow-y-auto px-3 py-3 space-y-0.5">
       <button class="atab w-full text-left px-3 py-2.5 rounded-lg text-sm flex items-center gap-2.5 min-h-[44px]" id="tab-metrics" onclick="switchTab('metrics')">
         <i class="fa-solid fa-chart-line w-4 text-center"></i>Métricas
       </button>
@@ -531,7 +550,8 @@
         <i class="fa-solid fa-file-signature w-4 text-center"></i>Contrato
       </button>
     </nav>
-    <div class="px-3 py-3 border-t border-gray-800 space-y-1">
+    <!-- Siempre visibles: aunque la pantalla sea bajita, el menú de arriba se desplaza y estos no se ocultan -->
+    <div class="adm-foot px-3 py-3 border-t border-gray-800 space-y-1 shrink-0 bg-gray-950">
       <button onclick="closeAdmin()" class="w-full text-left px-3 py-2.5 rounded-lg text-sm text-gray-400 hover:bg-gray-800 hover:text-gray-200 flex items-center gap-2 transition min-h-[44px]">
         <i class="fa-solid fa-arrow-left"></i>Volver al POS
       </button>
@@ -2629,10 +2649,10 @@
 <!-- ▌TICKET PARA IMPRIMIR ▐ — solo se ve al imprimir desde el navegador -->
 <div id="ticketPrint" aria-hidden="true"></div>
 
-<script src="app.js?v=20261029j"></script>
-<script src="mp-point.js?v=20261029j"></script>
-<script src="importar-excel.js?v=20261029j"></script>
-<script src="promos.js?v=20261029j"></script>
-<script src="devoluciones.js?v=20261029j"></script>
+<script src="app.js?v=20261029k"></script>
+<script src="mp-point.js?v=20261029k"></script>
+<script src="importar-excel.js?v=20261029k"></script>
+<script src="promos.js?v=20261029k"></script>
+<script src="devoluciones.js?v=20261029k"></script>
 </body>
 </html>
