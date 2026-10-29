@@ -671,6 +671,10 @@
       <div class="flex items-center justify-between mb-3">
         <h1 class="text-lg sm:text-xl font-black text-slate-800">📦 Productos</h1>
         <div class="flex gap-2">
+        <button onclick="abrirImportador()" title="Importar productos desde Excel (eleventa)"
+          class="bg-white border border-slate-200 hover:bg-slate-50 text-slate-700 px-3 sm:px-4 py-2 rounded-lg text-sm font-semibold flex items-center gap-1.5 transition min-h-[40px]">
+          <i class="fa-solid fa-file-excel text-emerald-600"></i><span class="hidden sm:inline">Importar Excel</span>
+        </button>
         <button onclick="openEntryModal()"
           class="bg-emerald-600 hover:bg-emerald-700 active:bg-emerald-800 text-white px-3 sm:px-4 py-2 rounded-lg text-sm font-semibold flex items-center gap-1.5 transition min-h-[40px]">
           <i class="fa-solid fa-dolly"></i><span class="hidden sm:inline">Entrada</span>
@@ -1981,6 +1985,81 @@
   </div>
 </div>
 
+<!-- IMPORTAR PRODUCTOS DESDE EXCEL (dueño) · el archivo se lee en el navegador -->
+<div id="importModal" class="hidden fixed inset-0 z-[65] flex items-end sm:items-center justify-center bg-black/60 backdrop-blur-sm p-0 sm:p-4">
+  <div class="bg-white rounded-t-2xl sm:rounded-2xl shadow-2xl p-5 sm:p-6 w-full sm:max-w-3xl sheet overflow-y-auto">
+    <div class="flex items-center justify-between mb-4">
+      <h3 class="font-bold text-slate-800 text-lg"><i class="fa-solid fa-file-excel text-emerald-600 mr-1.5"></i>Importar productos desde Excel</h3>
+      <button onclick="cerrarImportador()" aria-label="Cerrar" class="text-slate-400 hover:text-slate-600 p-1 min-w-[36px] min-h-[36px] flex items-center justify-center"><i class="fa-solid fa-xmark text-xl"></i></button>
+    </div>
+
+    <!-- Paso 1: elegir archivo -->
+    <div id="imp_paso1">
+      <label for="imp_file" class="block border-2 border-dashed border-slate-300 hover:border-emerald-400 hover:bg-emerald-50/40 rounded-2xl p-8 text-center cursor-pointer transition">
+        <i class="fa-solid fa-cloud-arrow-up text-4xl text-emerald-500 mb-2"></i>
+        <p class="font-bold text-slate-700">Elige tu archivo de Excel</p>
+        <p class="text-xs text-slate-500 mt-1">El que exportaste de eleventa: <b>Productos → Catálogo → Exportar</b>. También sirven .xls y .csv.</p>
+        <input id="imp_file" type="file" accept=".xlsx,.xls,.csv" class="hidden" onchange="impLeerArchivo(this)">
+      </label>
+      <p id="imp_leyendo" class="hidden text-sm text-slate-500 text-center mt-3"><i class="fa-solid fa-spinner fa-spin mr-1"></i>Leyendo el archivo…</p>
+      <div class="mt-4 bg-slate-50 border border-slate-200 rounded-xl p-3 text-xs text-slate-600 leading-relaxed">
+        <i class="fa-solid fa-lock text-slate-400 mr-1"></i>El archivo se lee aquí mismo, en esta computadora, y no se envía a nadie. Solo se guardan los productos en el inventario de tu negocio, como si los dieras de alta a mano.
+      </div>
+    </div>
+
+    <!-- Paso 2: revisar columnas y vista previa -->
+    <div id="imp_paso2" class="hidden">
+      <p id="imp_archivo" class="text-sm font-semibold text-slate-700 mb-3 break-anywhere"></p>
+      <p class="text-[11px] font-bold text-slate-400 uppercase tracking-wide mb-2">1 · Revisa qué columna es cada dato</p>
+      <div id="imp_mapa" class="grid grid-cols-2 sm:grid-cols-3 gap-2 mb-4"></div>
+      <p class="text-[11px] font-bold text-slate-400 uppercase tracking-wide mb-2">2 · Opciones</p>
+      <div class="space-y-2 mb-4">
+        <label class="flex items-start gap-2 text-sm text-slate-700 select-none">
+          <input id="imp_actualizar" type="checkbox" checked onchange="impPintar()" class="accent-emerald-600 w-4 h-4 mt-0.5">
+          <span>Actualizar los productos que ya tengo con el mismo código (nombre, precio, costo…)</span>
+        </label>
+        <label id="imp_stockRow" class="flex items-start gap-2 text-sm text-slate-700 select-none">
+          <input id="imp_stock" type="checkbox" checked onchange="impPintar()" class="accent-emerald-600 w-4 h-4 mt-0.5">
+          <span>Cargar las existencias del archivo <span class="text-xs text-slate-400">(reemplazan las actuales)</span></span>
+        </label>
+      </div>
+      <p class="text-[11px] font-bold text-slate-400 uppercase tracking-wide mb-2">3 · Así se van a guardar</p>
+      <div id="imp_resumen" class="flex flex-wrap gap-1.5 mb-3"></div>
+      <div class="table-scroll border border-slate-200 rounded-xl mb-2">
+        <table class="w-full text-xs min-w-[640px]">
+          <thead class="bg-slate-50 text-slate-500">
+            <tr>
+              <th class="text-left px-2 py-2 font-semibold">Código</th>
+              <th class="text-left px-2 py-2 font-semibold">Nombre</th>
+              <th class="text-right px-2 py-2 font-semibold">Precio</th>
+              <th class="text-right px-2 py-2 font-semibold">Costo</th>
+              <th class="text-right px-2 py-2 font-semibold">Existencia</th>
+              <th class="text-left px-2 py-2 font-semibold">Depto.</th>
+              <th class="text-left px-2 py-2 font-semibold">Venta</th>
+              <th class="text-left px-2 py-2 font-semibold">Estado</th>
+            </tr>
+          </thead>
+          <tbody id="imp_preview"></tbody>
+        </table>
+      </div>
+      <p class="text-[11px] text-slate-400 mb-2">Vista previa de los primeros 8 productos.</p>
+      <p id="imp_aviso" class="hidden text-sm font-semibold text-red-600 bg-red-50 rounded-lg px-3 py-2 mb-2"></p>
+      <div class="flex gap-2 pt-1">
+        <button onclick="impPaso(1)" class="flex-1 bg-slate-100 hover:bg-slate-200 text-slate-700 py-3 rounded-xl font-semibold text-sm min-h-[48px]">Otro archivo</button>
+        <button id="imp_btn" onclick="impImportar()" class="flex-[2] bg-emerald-600 hover:bg-emerald-700 disabled:bg-slate-200 disabled:text-slate-400 disabled:cursor-not-allowed text-white py-3 rounded-xl font-bold text-sm min-h-[48px]">Importar</button>
+      </div>
+    </div>
+
+    <!-- Paso 3: guardando -->
+    <div id="imp_paso3" class="hidden">
+      <p id="imp_prog" class="text-sm font-semibold text-slate-700 mb-2"></p>
+      <div class="h-3 bg-slate-100 rounded-full overflow-hidden"><div id="imp_barra" class="h-3 bg-emerald-500 rounded-full transition-all" style="width:0%"></div></div>
+      <p id="imp_progNota" class="text-xs text-slate-400 mt-2">No cierres esta ventana ni la página hasta que termine.</p>
+      <div id="imp_fin" class="hidden mt-4"></div>
+    </div>
+  </div>
+</div>
+
 <!-- HARDWARE / SETTINGS MODAL -->
 <div id="hardwareModal" class="hidden fixed inset-0 z-[65] flex items-end sm:items-center justify-center bg-black/60 backdrop-blur-sm p-0 sm:p-4">
   <div class="bg-white rounded-t-2xl sm:rounded-2xl shadow-2xl p-5 sm:p-6 w-full sm:max-w-md sheet overflow-y-auto">
@@ -2293,7 +2372,8 @@
 <!-- ▌TICKET PARA IMPRIMIR ▐ — solo se ve al imprimir desde el navegador -->
 <div id="ticketPrint" aria-hidden="true"></div>
 
-<script src="app.js?v=20261028d"></script>
-<script src="mp-point.js?v=20261028d"></script>
+<script src="app.js?v=20261028e"></script>
+<script src="mp-point.js?v=20261028e"></script>
+<script src="importar-excel.js?v=20261028e"></script>
 </body>
 </html>
