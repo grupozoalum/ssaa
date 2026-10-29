@@ -10,12 +10,17 @@
    nombreCajeroActual, renderCart, showPaymentModal, hidePayModal,
    openHardwareModal y finalizarVenta.
 
-   Flujo:
+   Flujo (vía rápida):
      processPayment()  ── tarjeta/mixto ──►  iniciarCobroTerminal(pago)
-        └► crea negocios/{TENANT}/payment_intents/{id} (status: pending)
-        └► Cloud Function lo manda a la terminal (status: sent)
-        └► Webhook de MP lo marca paid / rejected / canceled…
+        └► llama DIRECTO a la función mpPoint('cobrar'): crea
+           negocios/{TENANT}/payment_intents/{id} y lo manda a la terminal
+           en la misma llamada (status: sent)
+        └► cada 2 s el POS llama mpPoint('estado'): el servidor le pregunta
+           a Mercado Pago y anota paid / rejected / canceled…
+           (el webhook sigue funcionando: gana el que llegue primero)
         └► onSnapshot aquí: paid → finalizarVenta() → ticket
+   Respaldo: si la función directa no está publicada, se usa el camino
+   anterior (la caja escribe el documento y el disparador lo manda).
 ════════════════════════════════════════════════════════════════ */
 
 const MP_PEND_KEY        = 'posMpPendiente_v1';   // cobros sin resolver (sobreviven a recargar la página)
@@ -29,6 +34,20 @@ S.mpUltimo      = null;       // último cobro terminado sin éxito (para mostra
 S.mpUltimoDato  = null;       // último snapshot del cobro activo
 S.mpUnsubs      = {};         // listeners por cobro
 S.mpRegistrados = new Set();  // cobros ya convertidos en venta en esta sesión
+S.mpDatos       = {};         // último estado conocido de cada cobro escuchado
+S.mpEnVuelo     = {};         // llamadas en curso por cobro (para no encimarlas)
+S.mpDirectoOK   = true;       // ¿está publicada la función directa mpPoint?
+
+/* ── Llamada directa a la Cloud Function mpPoint ── */
+const MP_REGION   = 'us-central1';   // la misma región de functions/index.js
+const MP_RESPALDO = ['not-found','internal','unavailable','unknown','deadline-exceeded',''];
+const MP_POLL     = {};              // id → cuándo toca la siguiente consulta automática
+let _mpFn = null, _mpFallas = 0;
+function mpLlamar(accion, datos){
+  if(!_mpFn) _mpFn = firebase.app().functions(MP_REGION).httpsCallable('mpPoint', { timeout: 25000 });
+  return _mpFn({ accion, tenantId: TENANT, ...(datos || {}) }).then(r => { _mpFallas = 0; return r.data || {}; });
+}
+const mpCodigo = e => String((e && e.code) || '').replace(/^functions\//, '');
 
 const mpCol    = () => dbRoot.collection('negocios').doc(TENANT).collection('payment_intents');
 const mpDevKey = () => 'posMpDevice_v1:' + (TENANT || '');   // por negocio: el mismo navegador puede entrar a otro
@@ -155,31 +174,111 @@ async function iniciarCobroTerminal(pago){
   mostrarEsperaMP();
   escucharCobroMP(id);
 
-  /* Sin await: con la persistencia offline la promesa no resuelve hasta que el
-     servidor confirma. El listener ya refleja el estado; aquí solo se atrapa
-     un rechazo real (por ejemplo, reglas de Firestore). */
-  ref.set({
-    status:'pending',
+  const datos = {
     amount, deviceId,
     payMethod: pago.payMethod,
     total: pago.total,
     cashPortion: pago.cashPortion || 0,
     description: ('Venta ' + nombreNegocio()).slice(0, 140),
-    createdBy: S.user.uid,
     createdByName: nombreCajeroActual() || S.user.email || '',
     branchId: S.userBranchId || null,
     branchName: S.userBranchName || null,
-    caja: S.tid || null,
+    caja: S.tid || null
+  };
+  enviarCobroMP(id, ref, datos);
+}
+
+/* Vía rápida: la función mpPoint crea el cobro y lo manda a la terminal en
+   la misma llamada. Si no está publicada, se usa el camino anterior. */
+async function enviarCobroMP(id, ref, datos){
+  S.mpEnVuelo[id] = true;
+  try{
+    if(!S.mpDirectoOK) throw { code:'not-found', message:'vía directa apagada' };
+    const r = await mpLlamar('cobrar', { intentId:id, ...datos });
+    MP_POLL[id] = Date.now() + 1500;           // primera consulta automática en 1.5 s
+    /* Si el aviso de Firestore todavía no llega, se pinta con la respuesta */
+    if(r && MP_EN_CURSO.includes(r.status) && S.mpCobro && S.mpCobro.id === id
+       && (!S.mpUltimoDato || S.mpUltimoDato.status === 'pending')){
+      S.mpUltimoDato = { ...(S.mpUltimoDato || {}), status: r.status };
+      pintarEsperaMP(S.mpUltimoDato);
+    }
+  }catch(e){
+    const code = mpCodigo(e);
+    if(MP_RESPALDO.includes(code)){
+      console.warn('mpPoint no disponible (' + (code || e.message) + '): se usa el camino anterior');
+      if(code === 'not-found' || code === '') S.mpDirectoOK = false;
+      crearCobroPorDocumento(id, ref, datos);
+    } else {
+      /* Error de negocio (módulo apagado, token, usuario…): el cobro no se creó */
+      terminarCobroMP(id, { status:'error', error: e.message || 'No se pudo enviar el cobro.' });
+    }
+  }finally{
+    delete S.mpEnVuelo[id];
+    if(S.mpCancelPend === id){ S.mpCancelPend = null; cancelarCobroMP(); }
+  }
+}
+
+/* Camino anterior (respaldo): la caja escribe el documento y el disparador lo manda */
+function crearCobroPorDocumento(id, ref, datos){
+  /* Sin await: con la persistencia offline la promesa no resuelve hasta que el
+     servidor confirma. El listener ya refleja el estado; aquí solo se atrapa
+     un rechazo real (por ejemplo, reglas de Firestore). */
+  ref.set({
+    status:'pending',
+    ...datos,
+    createdBy: S.user.uid,
     clientTs: Math.round(horaSegura() || Date.now()),   // hora del servidor, no la del dispositivo
     cancelRequested: false,
     createdAt: FS.FieldValue.serverTimestamp()
-  }).catch(e => {
+  }).catch(async e => {
+    /* ¿El servidor sí alcanzó a crearlo (la llamada directa tardó)? Entonces solo se espera */
+    if(e.code === 'permission-denied'){
+      try{ if((await ref.get()).exists){ S.mpDirectoOK = true; return; } }catch(_){}
+    }
     console.error('payment_intent:', e);
     terminarCobroMP(id, { status:'error', error: e.code === 'permission-denied'
       ? 'Las reglas de Firestore no permiten crear el cobro (payment_intents).'
       : 'No se pudo enviar el cobro: ' + e.message });
   });
 }
+
+/* ── Consulta automática a Mercado Pago ──
+   Cobro en pantalla: cada 2 s el primer minuto, luego cada 4 s y después cada 8 s.
+   Cobros en segundo plano («seguir sin esperar»): cada 15 s hasta 30 min.
+   Así no depende de que llegue el webhook ni hay que tocar «Verificar». */
+function tickConsultaMP(){
+  if(!S.mpDirectoOK || !TENANT || !S.user || !isOnline()) return;
+  const ahora = Date.now();
+  const pend = leerPendMP();
+  Object.keys(S.mpUnsubs).forEach(id => {
+    const p = pend[id]; if(!p) return;
+    const st = (S.mpDatos[id] || {}).status;
+    if(MP_FINALES.includes(st) || st === 'review') return;
+    if(S.mpEnVuelo[id] || (MP_POLL[id] || 0) > ahora) return;
+    const edad = ahora - p.ts;
+    if(edad > 30 * 60e3) return;
+    const activo = !!(S.mpCobro && S.mpCobro.id === id);
+    MP_POLL[id] = ahora + (activo ? (edad < 60e3 ? 2000 : edad < 180e3 ? 4000 : 8000) : 15000);
+    S.mpEnVuelo[id] = true;
+    mpLlamar('estado', { intentId:id })
+      .catch(e => {
+        if(MP_RESPALDO.includes(mpCodigo(e)) && ++_mpFallas >= 3) S.mpDirectoOK = false;   // no publicada
+      })
+      .finally(() => { delete S.mpEnVuelo[id]; });
+  });
+}
+setInterval(tickConsultaMP, 500);
+
+/* Mantener la función despierta: el primer cobro no espera el arranque en frío */
+let _mpUltimoPing = 0;
+function mpPrecalentar(forzar){
+  if(!mpModuloActivo() || !leerTerminalMP() || !S.user || !TENANT || !S.mpDirectoOK) return;
+  if(window._phoneMode || window._displayMode || !isOnline()) return;
+  if(!forzar && Date.now() - _mpUltimoPing < 4 * 60e3) return;
+  _mpUltimoPing = Date.now();
+  mpLlamar('ping').catch(() => {});
+}
+setInterval(() => mpPrecalentar(true), 5 * 60e3);
 
 /* ════════════════════════════════════
    5) LISTENER EN TIEMPO REAL
@@ -189,6 +288,7 @@ function escucharCobroMP(id){
   S.mpUnsubs[id] = mpCol().doc(id).onSnapshot(snap => {
     if(!snap.exists) return;
     const d = snap.data();
+    S.mpDatos[id] = d;
     if(S.mpCobro && S.mpCobro.id === id){ S.mpUltimoDato = d; pintarEsperaMP(d); }
     if(d.status === 'paid') registrarCobroMP(id, d, false);
     else if(MP_FINALES.includes(d.status)) terminarCobroMP(id, d);
@@ -198,6 +298,8 @@ function escucharCobroMP(id){
 function soltarCobroMP(id){
   try{ S.mpUnsubs[id] && S.mpUnsubs[id](); }catch(e){}
   delete S.mpUnsubs[id];
+  delete S.mpDatos[id];
+  delete MP_POLL[id];
 }
 
 /* paid → registrar la venta con la lógica existente + ticket */
@@ -313,6 +415,16 @@ setInterval(() => {
 /* ── Botones ── */
 async function cancelarCobroMP(){
   const c = S.mpCobro; if(!c) return;
+  /* Se ve "Cancelando…" de inmediato; el documento confirma después */
+  S.mpUltimoDato = { ...(S.mpUltimoDato || {}), cancelRequested:true };
+  pintarEsperaMP(S.mpUltimoDato);
+  if(S.mpEnVuelo[c.id] && !MP_POLL[c.id]){ S.mpCancelPend = c.id; return; }   // aún se está mandando: se cancela al terminar
+  if(S.mpDirectoOK){
+    try{ await mpLlamar('cancelar', { intentId:c.id }); MP_POLL[c.id] = Date.now() + 1500; return; }
+    catch(e){
+      if(!MP_RESPALDO.includes(mpCodigo(e))){ showToast('No se pudo cancelar: ' + e.message,'error'); return; }
+    }
+  }
   try{
     await mpCol().doc(c.id).update({ cancelRequested:true, cancelRequestedAt: FS.FieldValue.serverTimestamp() });
   }catch(e){ showToast('No se pudo pedir la cancelación: ' + (e.code || e.message),'error'); }
@@ -322,6 +434,22 @@ async function verificarCobroMP(){
   const c = S.mpCobro; if(!c) return;
   S.mpVerificando = Date.now();
   pintarEsperaMP(S.mpUltimoDato);
+  if(S.mpDirectoOK){
+    try{
+      const r = await mpLlamar('estado', { intentId:c.id, forzar:true });
+      S.mpVerificando = 0;
+      if(r.status === 'sent' && !(S.mpUltimoDato && S.mpUltimoDato.cancelRequested)){
+        showToast('Mercado Pago dice que el cobro sigue esperando en la terminal','info');
+      }
+      if(S.mpCobro && S.mpCobro.id === c.id) pintarEsperaMP(S.mpUltimoDato);
+      return;
+    }catch(e){
+      if(!MP_RESPALDO.includes(mpCodigo(e))){
+        S.mpVerificando = 0; pintarEsperaMP(S.mpUltimoDato);
+        showToast('No se pudo consultar: ' + e.message,'error'); return;
+      }
+    }
+  }
   try{
     await mpCol().doc(c.id).update({ checkRequestedAt: FS.FieldValue.serverTimestamp() });
   }catch(e){
@@ -408,4 +536,5 @@ function reanudarCobroTerminal(){
     S.mpCobro = { id:ultimo.id, deviceId:ultimo.deviceId, amount:ultimo.amount, pago:ultimo.pago, desde:ultimo.ts };
     mostrarEsperaMP();
   }
+  mpPrecalentar(true);   // deja lista la función para el primer cobro del día
 }
