@@ -420,71 +420,101 @@ function renglonPromo(p, qty){
            isPromo:true, promoId:p.promoId, promoCode:p.code||'', items:p.items.map(c=>({barcode:c.barcode, name:c.name, qty:c.qty})) };
 }
 /* ── Promociones automáticas ──
-   Si en la venta se juntan los productos de una promo (ej. 2 caguamas
-   sueltas y existe «2x60»), se cambian solos por la promoción.
+   Cada vez que se agrega algo, la venta se «re-arma» desde cero:
+     1) las promos que se aplicaron solas se desarman en piezas sueltas,
+     2) se vuelven a armar empezando por la que da MÁS DESCUENTO (en %).
+   Así, si existen «2 papas x $38» y «6 papas x $99» y el cliente lleva 6,
+   se cobra 6 x $99 (y no 3 veces 2 x $38). Con 7: 6 x $99 + 1 normal.
+   Con 8: 6 x $99 + 2 x $38.
    Solo promos marcadas como automáticas, con piezas enteras (no granel)
-   y que de verdad salgan más baratas. Primero la que más ahorra. */
-function aplicarPromosAuto(){
-  const sueltoDe = b => S.cart.find(i=>i.barcode===b && !i.isPromo && !i.isCredit && !i.isRecharge && !i.isBulk);
-  const candidatas = promosActivas().filter(pr => pr.auto !== false && pr.items.length
-    && pr.items.every(c => Number.isInteger(c.qty) && c.qty>0 && !(S.products.find(x=>x.barcode===c.barcode)||{}).isBulk))
-    .map(pr => ({ pr, ahorro: pr.items.reduce((n,c)=>n + (Number((S.products.find(x=>x.barcode===c.barcode)||{}).price)||0)*c.qty, 0) - pr.price }))
-    .filter(x => x.ahorro > 0.001)
-    .sort((a,b) => b.ahorro - a.ahorro);
-  const aplicadas = [];
-  for(let vuelta=0; vuelta<200 && candidatas.length; vuelta++){
-    const hit = candidatas.find(({pr}) => pr.items.every(c => { const it = sueltoDe(c.barcode); return it && it.quantity >= c.qty; }));
-    if(!hit) break;
-    const pr = hit.pr;
-    pr.items.forEach(c=>{
-      const it = sueltoDe(c.barcode);
-      it.quantity = round3(it.quantity - c.qty);
-      it.subtotal = it.price * it.quantity;
-      if(it.quantity <= 0) S.cart = S.cart.filter(x=>x!==it);
-    });
-    const ex = S.cart.find(i=>i.barcode===pr.barcode);
-    if(ex){ ex.quantity += 1; ex.subtotal = ex.price * ex.quantity; }
-    else S.cart.push(renglonPromo(pr, 1));
-    S.lastAdded = pr.barcode;
-    aplicadas.push(pr.name);
-  }
-  aplicarPromosMix(aplicadas);   // después las «a elegir» (2 x $38 en cualquier combinación)
-  return aplicadas;
+   y que de verdad salgan más baratas. */
+const _precioDe = b => Number((S.products.find(x=>x.barcode===b)||{}).price)||0;
+const _sueltos  = i => i && !i.isPromo && !i.isCredit && !i.isRecharge && !i.isBulk;
+function _conteoPromos(){
+  const m = {};
+  S.cart.forEach(i=>{ if(i.isPromo){ const k = i.promoId || i.barcode; m[k] = m[k] || {n:0, name:i.name}; m[k].n += Number(i.quantity)||0; } });
+  return m;
 }
-/* Promos «a elegir»: si en la venta hay N piezas sueltas de sus opciones
-   (en cualquier combinación), se cambian por la promo. Se toman primero
-   las piezas más caras (el cliente siempre sale ganando). Cada combinación
-   distinta es su propio renglón (para descontar bien el inventario). */
-function aplicarPromosMix(aplicadas){
-  const sueltos = ops => S.cart.filter(i=>ops.has(i.barcode) && !i.isPromo && !i.isCredit && !i.isRecharge && !i.isBulk && i.quantity>=1);
-  const mixes = promosActivas().filter(pr => pr.tipo==='mix' && pr.auto !== false);
-  for(const pr of mixes){
-    const ops = new Set(pr.opciones.map(o=>o.barcode));
-    for(let vuelta=0; vuelta<200; vuelta++){
-      const lista = sueltos(ops);
-      if(lista.reduce((n,i)=>n + Math.floor(i.quantity), 0) < pr.cantidad) break;
-      const tomar = []; let falta = pr.cantidad, normal = 0;
-      for(const it of [...lista].sort((a,b)=>b.price-a.price)){
-        const n = Math.min(falta, Math.floor(it.quantity));
-        if(n>0){ tomar.push([it, n]); falta -= n; normal += it.price*n; }
-        if(!falta) break;
-      }
-      if(falta>0 || normal - pr.price <= 0.001) break;   // no alcanza o no conviene
-      tomar.forEach(([it, n])=>{
-        it.quantity = round3(it.quantity - n);
-        it.subtotal = it.price * it.quantity;
-        if(it.quantity <= 0) S.cart = S.cart.filter(x=>x!==it);
-      });
-      const items = tomar.map(([it, n])=>({barcode:it.barcode, name:it.name, qty:n}))
-                         .sort((a,b)=>a.barcode<b.barcode?-1:1);
-      const clave = pr.barcode + ':' + items.map(c=>c.barcode+'x'+c.qty).join('+');
-      const ex = S.cart.find(i=>i.barcode===clave);
-      if(ex){ ex.quantity += 1; ex.subtotal = ex.price * ex.quantity; }
-      else S.cart.push({...renglonPromo({...pr, items}, 1), barcode:clave, promoTipo:'mix'});
-      S.lastAdded = clave;
-      aplicadas.push(pr.name);
-    }
+/* 1) Desarma las promos automáticas en piezas sueltas */
+function _desarmarPromosAuto(){
+  S.cart.filter(i=>i.isPromo && i.autoPromo).forEach(ln=>{
+    const partes = (ln.items||[]).map(c=>[c, S.products.find(x=>x.barcode===c.barcode)]);
+    if(!partes.length || partes.some(([,p])=>!p)) return;           // un producto ya no existe: se deja como está
+    S.cart = S.cart.filter(x=>x!==ln);
+    partes.forEach(([c, p])=>{
+      const n = round3((Number(c.qty)||0) * (Number(ln.quantity)||0));
+      const it = S.cart.find(i=>i.barcode===p.barcode && _sueltos(i));
+      if(it){ it.quantity = round3(it.quantity + n); it.subtotal = it.price * it.quantity; }
+      else S.cart.push({ barcode:p.barcode, name:p.name, price:p.price, cost:Number(p.cost)||0, quantity:n, subtotal:p.price*n, isBulk:p.isBulk });
+    });
+  });
+}
+function _agregarRenglonPromo(base, items, clave){
+  const ex = S.cart.find(i=>i.barcode===clave && i.isPromo);
+  if(ex){ ex.quantity += 1; ex.subtotal = ex.price * ex.quantity; ex.autoPromo = true; }
+  else S.cart.push({ ...renglonPromo({...base, items}, 1), barcode:clave, autoPromo:true, ...(base.tipo==='mix'?{promoTipo:'mix'}:{}) });
+  S.lastAdded = clave;
+}
+function _quitarPiezas(it, n){
+  it.quantity = round3(it.quantity - n);
+  it.subtotal = it.price * it.quantity;
+  if(it.quantity <= 0) S.cart = S.cart.filter(x=>x!==it);
+}
+/* Paquete fijo: mientras estén todas sus piezas sueltas */
+function _armarFija(pr){
+  for(let v=0; v<200; v++){
+    const ok = pr.items.every(c=>{ const it = S.cart.find(i=>i.barcode===c.barcode && _sueltos(i)); return it && it.quantity >= c.qty; });
+    if(!ok) return;
+    if(pr.items.reduce((n,c)=>n + _precioDe(c.barcode)*c.qty, 0) - pr.price <= 0.001) return;
+    pr.items.forEach(c=>_quitarPiezas(S.cart.find(i=>i.barcode===c.barcode && _sueltos(i)), c.qty));
+    _agregarRenglonPromo(pr, pr.items.map(c=>({...c})), pr.barcode);
   }
+}
+/* A elegir: N piezas de sus opciones, en cualquier combinación (primero las más caras) */
+function _armarMix(pr){
+  const ops = new Set(pr.opciones.map(o=>o.barcode));
+  for(let v=0; v<200; v++){
+    const lista = S.cart.filter(i=>ops.has(i.barcode) && _sueltos(i) && i.quantity>=1);
+    if(lista.reduce((n,i)=>n + Math.floor(i.quantity), 0) < pr.cantidad) return;
+    const tomar = []; let falta = pr.cantidad, normal = 0;
+    for(const it of [...lista].sort((a,b)=>b.price-a.price)){
+      const n = Math.min(falta, Math.floor(it.quantity));
+      if(n>0){ tomar.push([it, n]); falta -= n; normal += it.price*n; }
+      if(!falta) break;
+    }
+    if(falta>0 || normal - pr.price <= 0.001) return;
+    tomar.forEach(([it, n])=>_quitarPiezas(it, n));
+    const items = tomar.map(([it, n])=>({barcode:it.barcode, name:it.name, qty:n})).sort((a,b)=>a.barcode<b.barcode?-1:1);
+    _agregarRenglonPromo(pr, items, pr.barcode + ':' + items.map(c=>c.barcode+'x'+c.qty).join('+'));
+  }
+}
+/* % de descuento de una promo (para decidir cuál se arma primero) */
+function _descuentoPromo(pr){
+  let normal;
+  if(pr.tipo==='mix'){
+    const ps = pr.opciones.map(o=>_precioDe(o.barcode)).filter(x=>x>0);
+    normal = ps.length ? ps.reduce((a,b)=>a+b, 0) / ps.length * pr.cantidad : 0;
+  } else normal = pr.items.reduce((n,c)=>n + _precioDe(c.barcode)*c.qty, 0);
+  return normal > 0 ? (normal - pr.price) / normal : 0;
+}
+function aplicarPromosAuto(){
+  const candidatas = promosActivas().filter(pr => pr.auto !== false && (
+      pr.tipo==='mix'
+        ? pr.opciones.every(o=>!(S.products.find(x=>x.barcode===o.barcode)||{}).isBulk)
+        : pr.items.length && pr.items.every(c => Number.isInteger(c.qty) && c.qty>0 && !(S.products.find(x=>x.barcode===c.barcode)||{}).isBulk)))
+    .map(pr => ({pr, desc:_descuentoPromo(pr)}))
+    .filter(x => x.desc > 0)
+    .sort((a,b) => b.desc - a.desc);
+  if(!candidatas.length && !S.cart.some(i=>i.autoPromo)) return [];
+  const antes = _conteoPromos();
+  const ultimo = S.lastAdded;
+  _desarmarPromosAuto();
+  candidatas.forEach(({pr}) => pr.tipo==='mix' ? _armarMix(pr) : _armarFija(pr));
+  /* Avisar solo las promos que crecieron */
+  const despues = _conteoPromos(), nuevas = [];
+  Object.entries(despues).forEach(([k, v])=>{ if(v.n > ((antes[k]||{}).n||0)) nuevas.push(v.name); });
+  if(!nuevas.length && ultimo && S.cart.some(i=>i.barcode===ultimo)) S.lastAdded = ultimo;
+  return nuevas;
 }
 function avisarPromosAuto(lista){
   if(!lista.length) return;
@@ -1567,6 +1597,20 @@ function sumarRestarUltimo(d){
     if(p){ agregarEscaneado(p); return; }
     changeCartQty(it.barcode, 1);
   } else {
+    /* «−» del último producto escaneado: si ya estaba dentro de una promo
+       automática, se desarma, se quita UNA pieza y se vuelve a armar
+       (así 6 x $99 con una papa menos queda en 2 x $38 + … y no se pierden 6) */
+    const prod = S.products.find(x => x.barcode === S.ultimoEscaneado);
+    if(prod && !prod.isBulk && S.cart.some(i=>i.autoPromo && (i.items||[]).some(c=>c.barcode===prod.barcode))){
+      _desarmarPromosAuto();
+      const suelto = S.cart.find(i=>i.barcode===prod.barcode && !i.isPromo && !i.isCredit && !i.isRecharge);
+      if(suelto) _quitarPiezas(suelto, 1);
+      avisarPromosAuto(aplicarPromosAuto());
+      S.lastAdded = prod.barcode;
+      renderCart(); refreshProductStockUI(); beep('scan');
+      showToast('Se quitó 1 ' + prod.name, 'info');
+      return;
+    }
     if((Number(it.quantity)||0) <= 1){
       removeCartItem(it.barcode);
       showToast('Se quitó ' + it.name, 'info');
@@ -1809,7 +1853,7 @@ function addToCart(silencioso){
     if(!isMobile()) g('searchInput').focus();
   } else if(p.isBulk) g('qtyInput').focus();
 }
-function removeCartItem(b){ S.cart=S.cart.filter(i=>i.barcode!==b); renderCart(); refreshProductStockUI(); }
+function removeCartItem(b){ S.cart=S.cart.filter(i=>i.barcode!==b); aplicarPromosAuto(); renderCart(); refreshProductStockUI(); }
 function changeCartQty(b,d){
   const i=S.cart.find(x=>x.barcode===b);
   if(!i) return;
@@ -1836,7 +1880,7 @@ function changeCartQty(b,d){
   }
   i.quantity = next;
   i.subtotal = i.price * i.quantity;
-  const promosAplicadas = d>0 ? aplicarPromosAuto() : [];
+  const promosAplicadas = aplicarPromosAuto();   // al subir o bajar, se re-arman las promos
   renderCart();
   avisarPromosAuto(promosAplicadas);
   refreshProductStockUI();
@@ -4122,12 +4166,56 @@ function imprimirEnNavegador(lines){
   setTimeout(()=>{ window.print(); setTimeout(volver, 1500); }, 60);
 }
 
+/* ── Ticket en pantalla más grande (para quien ve poco) ──
+   Lupa − / + en la ventana «¡Venta registrada!». Se recuerda en esta caja.
+   Arriba del ticket, el TOTAL y el CAMBIO en letras enormes. */
+const TK_ZOOM_KEY = 'posTicketZoom_v1';
+const TK_ZOOMS = [1, 1.25, 1.5, 1.75, 2, 2.5];
+function tkZoomIdx(){
+  try{ const v = Number(localStorage.getItem(TK_ZOOM_KEY)); return Number.isInteger(v) && v>=0 && v<TK_ZOOMS.length ? v : 2; }   // por defecto 150 %
+  catch(e){ return 2; }
+}
+function cambiarZoomTicket(d){
+  const i = Math.max(0, Math.min(TK_ZOOMS.length-1, tkZoomIdx() + d));
+  try{ localStorage.setItem(TK_ZOOM_KEY, String(i)); }catch(e){}
+  aplicarZoomTicket();
+}
+function aplicarZoomTicket(){
+  const cfg = prnCfg();
+  const anchoPx = paperMM(cfg) * 3.78;                       // ancho del ticket en pantalla
+  const pedido = TK_ZOOMS[tkZoomIdx()];
+  /* En pantallas angostas (celular) se limita para que el ticket no se salga */
+  const cabe = Math.max(1, (window.innerWidth - 72) / anchoPx);
+  const z = Math.min(pedido, cabe);
+  const tk = document.querySelector('#receiptPrintArea .tk-screen');
+  if(tk) tk.style.zoom = z;
+  const box = document.querySelector('#receiptModal .rc-box');
+  if(box) box.style.maxWidth = `min(96vw, ${Math.round(anchoPx * z + 96)}px)`;
+  const l = g('tkZoomLbl'); if(l) l.textContent = Math.round(pedido*100) + '%';
+  const m = g('tkZoomMenos'), M = g('tkZoomMas');
+  if(m) m.disabled = tkZoomIdx() <= 0;
+  if(M) M.disabled = tkZoomIdx() >= TK_ZOOMS.length-1;
+}
+window.addEventListener('resize', ()=>{ if(!g('receiptModal')?.classList.contains('hidden')) aplicarZoomTicket(); });
+
 function showReceiptModal(sale, opts={}){
   _lastReceipt=sale;
   const cfg = prnCfg();
   g('receiptPrintArea').innerHTML =
     `<div class="tk-wrap"><div class="tk tk-screen p${paperMM(cfg)}${cfg.bigFont?' big':''}">${ticketHTML(ticketLines(sale))}</div></div>`;
+  /* TOTAL y CAMBIO bien grandes, fuera del ticket */
+  const res = g('receiptResumen');
+  if(res){
+    const total = Number(sale.total)||0;
+    const devolver = sale.payMethod==='cash' && total < 0;
+    const cambio = sale.payMethod==='cash' && !devolver ? (Number(sale.change)||0) : null;
+    res.innerHTML = devolver
+      ? `<div class="flex-1 rounded-xl bg-red-50 px-3 py-2"><p class="text-xs font-bold text-red-600 uppercase">Entregar al cliente</p><p class="text-4xl font-black text-red-600 num leading-tight">${fmt(-total)}</p></div>`
+      : `<div class="flex-1 rounded-xl bg-indigo-50 px-3 py-2"><p class="text-xs font-bold text-indigo-600 uppercase">Total</p><p class="text-4xl font-black text-indigo-700 num leading-tight">${fmt(total)}</p></div>`
+        + (cambio!==null ? `<div class="flex-1 rounded-xl ${cambio>0?'bg-emerald-50':'bg-slate-50'} px-3 py-2"><p class="text-xs font-bold ${cambio>0?'text-emerald-600':'text-slate-500'} uppercase">Cambio</p><p class="text-4xl font-black ${cambio>0?'text-emerald-600':'text-slate-500'} num leading-tight">${fmt(cambio)}</p></div>` : '');
+  }
   g('receiptModal').classList.remove('hidden');
+  aplicarZoomTicket();
   /* ¿Imprimir? Lo que eligió el cajero en la ventana de cobro; si no viene
      (ventas viejas pendientes), lo que diga Hardware. */
   const imprimir = typeof opts.imprimir==='boolean' ? opts.imprimir : !!prnCfg().autoPrint;

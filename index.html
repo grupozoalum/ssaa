@@ -1942,12 +1942,19 @@
 
 <!-- RECEIPT -->
 <div id="receiptModal" class="hidden fixed inset-0 z-[65] flex items-end sm:items-center justify-center bg-black/60 backdrop-blur-sm p-0 sm:p-4">
-  <div class="rc-box bg-white rounded-t-2xl sm:rounded-2xl shadow-2xl p-5 sm:p-6 w-full sm:max-w-sm sheet overflow-y-auto">
+  <div class="rc-box bg-white rounded-t-2xl sm:rounded-2xl shadow-2xl p-5 sm:p-6 w-full sm:max-w-sm sheet overflow-y-auto max-h-[96vh]">
     <div class="text-center mb-3">
       <div class="text-4xl mb-1">✅</div>
       <h3 class="font-black text-slate-800 text-lg">¡Venta registrada!</h3>
     </div>
-    <div id="receiptPrintArea" class="mb-4"></div>
+    <div id="receiptResumen" class="flex gap-2 mb-3 text-center"></div>
+    <div class="flex items-center justify-center gap-2 mb-2">
+      <span class="text-xs text-slate-500"><i class="fa-solid fa-magnifying-glass"></i> Ticket</span>
+      <button id="tkZoomMenos" onclick="cambiarZoomTicket(-1)" class="w-10 h-10 rounded-lg bg-slate-100 hover:bg-slate-200 disabled:opacity-30 font-bold text-sm">A−</button>
+      <span id="tkZoomLbl" class="text-sm font-black text-slate-700 w-12 text-center">150%</span>
+      <button id="tkZoomMas" onclick="cambiarZoomTicket(1)" class="w-10 h-10 rounded-lg bg-slate-100 hover:bg-slate-200 disabled:opacity-30 font-bold text-lg">A+</button>
+    </div>
+    <div id="receiptPrintArea" class="mb-4 overflow-x-auto"></div>
     <div class="grid grid-cols-2 gap-2 mb-2">
       <button onclick="shareReceipt()" class="bg-emerald-600 hover:bg-emerald-700 text-white py-3 rounded-xl font-semibold text-sm min-h-[48px]"><i class="fa-brands fa-whatsapp mr-1.5"></i>Compartir</button>
       <button onclick="printReceipt()" class="bg-slate-100 hover:bg-slate-200 text-slate-700 py-3 rounded-xl font-semibold text-sm min-h-[48px]"><i class="fa-solid fa-print mr-1.5"></i>Imprimir</button>
@@ -2676,10 +2683,10 @@
 <!-- ▌TICKET PARA IMPRIMIR ▐ — solo se ve al imprimir desde el navegador -->
 <div id="ticketPrint" aria-hidden="true"></div>
 
-<script src="app.js?v=20261029p"></script>
-<script src="mp-point.js?v=20261029p"></script>
-<script src="importar-excel.js?v=20261029p"></script>
-<script src="promos.js?v=20261029p"></script>
-<script src="devoluciones.js?v=20261029p"></script>
+<script src="app.js?v=20261029r"></script>
+<script src="mp-point.js?v=20261029r"></script>
+<script src="importar-excel.js?v=20261029r"></script>
+<script src="promos.js?v=20261029r"></script>
+<script src="devoluciones.js?v=20261029r"></script>
 </body>
 </html>
