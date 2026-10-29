@@ -2273,7 +2273,7 @@ const PRN_LAST_KEY = 'posPrinterLast_v1';   // {kind, vendorId, productId} para 
                    'cut'  = impresora con cortador (avanza justo hasta la cuchilla y corta) */
 const PRN_KEY = 'posPrinterCfg_v2';
 const PRN_DEFAULT = { baud:9600, density:4, interval:3, doubleStrike:true, codepage:437, useDC2:false,
-                      paper:58, bigFont:false, ending:'tear', feedLines:3, autoPrint:true };
+                      paper:58, bigFont:false, ending:'tear', feedLines:3, autoPrint:true, center:true };
 const paperMM = cfg => Number((cfg||prnCfg()).paper)===80 ? 80 : 58;
 /* Columnas que caben en una línea con la letra normal de la impresora */
 const prnBaseCols = cfg => paperMM(cfg)===80 ? 48 : 32;
@@ -2479,6 +2479,7 @@ function updatePrinterUI(){
   ['prn_font','hw_font'].forEach(id=>set(id, cfg.bigFont?'big':'normal'));
   ['prn_end','hw_end'].forEach(id=>set(id, cfg.ending==='cut' ? 'cut' : 'tear'+cfg.feedLines));
   ['prn_auto','hw_auto'].forEach(id=>set(id, cfg.autoPrint));
+  ['prn_center','hw_center'].forEach(id=>set(id, cfg.center!==false));
   ['prn_colsHint','hw_colsHint'].forEach(id=>{ const el=g(id); if(el) el.textContent = cfg.bigFont
       ? `Todo en letra grande: ${prnCols(cfg)} letras por renglón (gasta más papel).`
       : `${prnBaseCols(cfg)} letras por renglón; nombre y TOTAL en grande.`; });
@@ -2497,6 +2498,7 @@ function onPaperChange(el){
     else savePrnCfg({ending:'tear', feedLines: Number(el.value.replace('tear',''))||3});
   }
   if(el.dataset.key==='auto') savePrnCfg({autoPrint: !!el.checked});
+  if(el.dataset.key==='center') savePrnCfg({center: !!el.checked});
   updatePrinterUI();
   showToast('Ajuste de impresión guardado','success');
 }
@@ -2539,8 +2541,10 @@ let PRN_RAW = false;   // true = escribir sin estilo (solo la prueba de densidad
 let PRN_SIZE = null;   // 'big' | 'normal' para la línea en curso (null = según config)
 function prnStyleBytes(cfg){
   const big = (PRN_SIZE || (cfg.bigFont ? 'big' : 'normal')) === 'big';
+  /* OJO: aquí NO va el comando de calor (ESC 7). Con el ticket centrado, varias
+     impresoras POS-58 imprimen su parámetro como «┤» al inicio de cada renglón.
+     El calor se manda UNA vez al empezar (applyPrinterSettings) y sirve para todo el ticket. */
   return [
-    heatCmd(cfg),                                  // mismo calor → mismo tono en toda la hoja
     new Uint8Array([0x1B,0x21, big?0x38:0x08]),    // ESC ! negrita (+ doble alto/ancho si es letra grande)
     new Uint8Array([0x1D,0x21, big?0x11:0x00]),    // GS  ! doble alto + doble ancho / tamaño normal
     new Uint8Array([0x1B,0x45,0x01]),              // ESC E negritas
@@ -2564,7 +2568,7 @@ async function applyPrinterSettings(){
   PRN_RAW = false;
   if(!S.printer.connected) return;
   const cfg = prnCfg();
-  const parts = [ESC.INIT, codepageCmd(cfg.codepage), ...prnStyleBytes(cfg)];
+  const parts = [ESC.INIT, codepageCmd(cfg.codepage), heatCmd(cfg), ...prnStyleBytes(cfg)];
   if(cfg.useDC2) parts.splice(3, 0, new Uint8Array([0x12,0x23, ((Math.min(7,cfg.density+2))<<5) | 0x0A]));
   await writeToPrinter(...parts);
 }
@@ -3873,7 +3877,8 @@ function printLinesEscPos(lines){
     /* Centrado automático: cada renglón mide exactamente el ancho del papel
        elegido y la impresora lo centra (ESC a 1). Si el área de impresión es
        más ancha que el ticket, queda en medio en lugar de pegado a la izquierda. */
-    const parts = [new Uint8Array([0x1B,0x61,0x01])];
+    const centrar = cfg.center !== false;
+    const parts = [new Uint8Array([0x1B,0x61, centrar?0x01:0x00])];
     try{
       for(const x of lines){
         PRN_SIZE = (x.k==='store' || x.k==='total') ? 'big' : body;
@@ -3886,7 +3891,7 @@ function printLinesEscPos(lines){
         /* El estilo (tamaño) se calcula ahora, mientras PRN_SIZE es el de esta línea */
         const style = prnStyleBytes(cfg);
         txt.split('\n').forEach((ln, i, arr)=>{
-          if(ln){ parts.push(...style, encPrinter(ln.length < W ? ln.padEnd(W) : ln, cfg.codepage)); }
+          if(ln){ parts.push(...style, encPrinter(centrar && ln.length < W ? ln.padEnd(W) : ln, cfg.codepage)); }
           if(i < arr.length-1) parts.push(new Uint8Array([0x0A]));
         });
       }

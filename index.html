@@ -2266,6 +2266,10 @@
               <p class="text-[10px] text-slate-400 mt-0.5">Usa el mínimo con el que la última línea salga completa de la impresora.</p>
             </div>
             <label class="flex items-start gap-2 text-xs text-slate-600 cursor-pointer pt-1">
+              <input id="hw_center" type="checkbox" checked data-key="center" onchange="onPaperChange(this)" class="accent-indigo-600 w-4 h-4 mt-0.5 shrink-0">
+              <span>Centrar el ticket en el papel<br><span class="text-[10px] text-slate-400">Quítalo si tu impresora imprime símbolos raros o el ticket sale chueco.</span></span>
+            </label>
+            <label class="flex items-start gap-2 text-xs text-slate-600 cursor-pointer pt-1">
               <input id="hw_auto" type="checkbox" checked data-key="auto" onchange="onPaperChange(this)" class="accent-indigo-600 w-4 h-4 mt-0.5 shrink-0">
               <span>Imprimir el ticket al cobrar<br><span class="text-[10px] text-slate-400">Es lo que viene marcado. En cada cobro puedes cambiarlo con el botón «Imprimir ticket» (o la tecla P).</span></span>
             </label>
@@ -2625,10 +2629,10 @@
 <!-- ▌TICKET PARA IMPRIMIR ▐ — solo se ve al imprimir desde el navegador -->
 <div id="ticketPrint" aria-hidden="true"></div>
 
-<script src="app.js?v=20261029i"></script>
-<script src="mp-point.js?v=20261029i"></script>
-<script src="importar-excel.js?v=20261029i"></script>
-<script src="promos.js?v=20261029i"></script>
-<script src="devoluciones.js?v=20261029i"></script>
+<script src="app.js?v=20261029j"></script>
+<script src="mp-point.js?v=20261029j"></script>
+<script src="importar-excel.js?v=20261029j"></script>
+<script src="promos.js?v=20261029j"></script>
+<script src="devoluciones.js?v=20261029j"></script>
 </body>
 </html>
