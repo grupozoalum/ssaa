@@ -1011,6 +1011,15 @@
         </button>
       </div>
       <p class="text-xs text-slate-400 mb-3">Cada corte guarda apertura, ventas en efectivo y tarjeta, salidas de caja, efectivo contado y diferencia. Toca “Ver” para el detalle completo del corte.</p>
+      <div class="bg-white border border-slate-200 rounded-xl p-3 mb-3 flex flex-wrap items-end gap-3 shadow-sm">
+        <div>
+          <label class="text-xs font-semibold text-slate-600 mb-1 block"><i class="fa-solid fa-coins text-amber-500 mr-1"></i>Fondo de caja que se deja en cada cambio de turno</label>
+          <input id="cfg_fondoCaja" type="number" inputmode="decimal" min="0" step="50" placeholder="Ej: 2000"
+            class="w-40 border border-slate-200 rounded-lg px-3 py-2 text-sm font-bold min-h-[40px]">
+        </div>
+        <button onclick="guardarFondoCaja()" class="bg-indigo-600 hover:bg-indigo-700 text-white px-4 py-2 rounded-lg text-sm font-semibold min-h-[40px]">Guardar</button>
+        <p class="text-[11px] text-slate-400 w-full">Al cerrar turno, el cajero cuenta todo, deja este fondo y retira lo demás. El siguiente turno se compara contra este fondo (no contra todo el dinero).</p>
+      </div>
       <div class="flex flex-wrap gap-2 mb-3">
         <select id="shiftSellerFilter" onchange="renderShiftsTable()" class="border border-slate-200 rounded-lg px-3 py-2 text-xs bg-white min-h-[36px]">
           <option value="">Todos los vendedores</option>
@@ -2083,6 +2092,13 @@
       <label class="text-xs font-semibold text-slate-500 mb-1 block">Efectivo contado al cierre</label>
       <input id="shiftCountedInput" type="number" inputmode="decimal" min="0" step="0.5" placeholder="0.00" oninput="calcShiftDiff()"
         class="w-full border border-slate-200 rounded-xl px-4 py-3 text-right text-2xl font-bold focus:outline-none focus:ring-2 focus:ring-indigo-500 min-h-[56px] mb-2">
+      <!-- Fondo para el siguiente turno: lo demás se retira -->
+      <div class="bg-amber-50 border border-amber-200 rounded-xl p-3 mb-3">
+        <label class="text-xs font-semibold text-amber-800 mb-1 block"><i class="fa-solid fa-coins mr-1"></i>¿Cuánto dejas de fondo en la caja para el siguiente turno?</label>
+        <input id="shiftFondoInput" type="number" inputmode="decimal" min="0" step="0.5" placeholder="Ej: 2000" oninput="calcRetiro()"
+          class="w-full border border-amber-300 rounded-xl px-4 py-2.5 text-right text-xl font-bold bg-white focus:outline-none focus:ring-2 focus:ring-amber-400 min-h-[48px]">
+        <p id="shiftRetiroEl" class="text-xs text-slate-500 mt-1"></p>
+      </div>
       <div id="shiftDiffRow" class="flex justify-between items-center bg-slate-50 rounded-xl px-4 py-3 mb-4">
         <span class="text-sm font-semibold text-slate-600">Diferencia:</span>
         <span id="shiftDiffEl" class="text-xl font-black">$0.00</span>
@@ -2683,10 +2699,10 @@
 <!-- ▌TICKET PARA IMPRIMIR ▐ — solo se ve al imprimir desde el navegador -->
 <div id="ticketPrint" aria-hidden="true"></div>
 
-<script src="app.js?v=20261029r"></script>
-<script src="mp-point.js?v=20261029r"></script>
-<script src="importar-excel.js?v=20261029r"></script>
-<script src="promos.js?v=20261029r"></script>
-<script src="devoluciones.js?v=20261029r"></script>
+<script src="app.js?v=20261029t"></script>
+<script src="mp-point.js?v=20261029t"></script>
+<script src="importar-excel.js?v=20261029t"></script>
+<script src="promos.js?v=20261029t"></script>
+<script src="devoluciones.js?v=20261029t"></script>
 </body>
 </html>

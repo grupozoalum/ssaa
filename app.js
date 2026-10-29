@@ -3270,7 +3270,7 @@ function initTerminal(){
     new QRCode(qrEl,{text:scanUrl(tid),width:76,height:76,colorDark:'#1e293b'});
   }catch(e){}
   db.collection('terminals').doc(tid).set({active:true,ts:FS.FieldValue.serverTimestamp()},{merge:true});
-  let lastTs=0;
+  let lastTs=0, primera=true;
   S.termUnsub = db.collection('terminals').doc(tid).onSnapshot(snap=>{
     const d=snap.data(); if(!d) return;
     if(d.deviceSeen){
@@ -3278,9 +3278,17 @@ function initTerminal(){
       if(seenMs) S.remoteLastSeen = seenMs;
       updateTermPresence();
     }
+    /* La PRIMERA lectura al abrir el POS trae el último código que se escaneó
+       con el celular (puede ser de hace horas). Ese ya se vendió: solo se
+       anota para no volver a agregarlo cada vez que se refresca la página. */
+    if(primera){
+      primera = false;
+      lastTs = d.lastScan?.timestamp?.toMillis?.() ?? 0;
+      return;
+    }
     if(!d.lastScan) return;
     const ts=d.lastScan.timestamp?.toMillis?.()??0;
-    if(ts<=lastTs) return; lastTs=ts;
+    if(!ts || ts<=lastTs) return; lastTs=ts;
     const code=d.lastScan.barcode;
     flashSync(true);
     g('searchInput').value = code;
@@ -4295,7 +4303,7 @@ function switchTab(tab){
   if(tab==='expenses') loadExpenses();
   if(tab==='sellers'){ loadSellers(); pintarPermisosUI(); }
   if(tab==='history') loadHistory();
-  if(tab==='shifts') loadShiftsAdmin();
+  if(tab==='shifts'){ loadShiftsAdmin(); pintarPermisosUI(); }
   if(tab==='hardware') updatePrinterUI();
   if(tab==='branches') renderBranches();
   if(tab==='recharges') renderCarriersTable();
@@ -5004,6 +5012,18 @@ function pintarPermisosUI(){
   if(b){ b.classList.toggle('hidden', !on); b.classList.toggle('flex', on); }
   const chk = g('perm_altaProductos');
   if(chk) chk.checked = S.permisos.altaProductos !== false;
+  const fc = g('cfg_fondoCaja');
+  if(fc && document.activeElement !== fc){ const f = fondoCajaConfig(); fc.value = f!=null ? f : ''; }
+}
+async function guardarFondoCaja(){
+  if(!S.isAdmin) return;
+  const raw = g('cfg_fondoCaja').value;
+  const v = raw==='' ? null : Math.round((parseFloat(raw)||0)*100)/100;
+  if(v!=null && v<0){ showToast('El fondo no puede ser negativo','error'); return; }
+  try{
+    await db.collection('config').doc('permisos').set({fondoCaja: v, updatedAt: FS.FieldValue.serverTimestamp()}, {merge:true});
+    showToast(v==null ? 'Sin fondo fijo: el cajero escribe cuánto deja' : 'Fondo de caja: '+fmt(v),'success');
+  }catch(e){ showToast('No se pudo guardar: '+e.message,'error'); }
 }
 async function guardarPermisoAlta(el){
   if(!S.isAdmin){ el.checked = !el.checked; return; }
@@ -5716,8 +5736,18 @@ function cambioDeTurno(s){
   const antes = (S.shiftsCache || []).filter(x => x.id !== s.id && (x.branchId||null) === (s.branchId||null) && t(x) < t(s));
   if(!antes.length) return null;
   const prev = antes.reduce((a,b) => t(b) > t(a) ? b : a);
-  const dejo = prev.countedCash != null ? prev.countedCash : (prev.status === 'open' ? null : (prev.expectedCash != null ? prev.expectedCash : null));
-  return {prev, dejo, diff: dejo == null ? null : Math.round(((s.openingCash||0) - dejo)*100)/100};
+  /* Lo que el turno anterior DEJÓ en la caja = su fondo (lo demás se retiró).
+     Cortes viejos (sin fondo guardado): se usa el fondo configurado por el dueño. */
+  let dejo = null, tipo = 'fondo';
+  if(prev.fondoDejado != null) dejo = prev.fondoDejado;
+  else if(prev.status === 'open') dejo = null;
+  else {
+    const f = fondoCajaConfig();
+    const contado = prev.countedCash != null ? prev.countedCash : prev.expectedCash;
+    if(f != null && contado != null){ dejo = Math.min(contado, f); tipo = 'config'; }
+    else { dejo = contado != null ? contado : null; tipo = 'contado'; }
+  }
+  return {prev, dejo, tipo, diff: dejo == null ? null : Math.round(((s.openingCash||0) - dejo)*100)/100};
 }
 
 /* ── Arranque tras iniciar sesión ── */
@@ -5833,7 +5863,11 @@ function openShiftModal(opts){
     g('shiftCardSalesEl').textContent=fmt(S.currentShift.cardSales||0);
     g('shiftCashOutEl').textContent='-'+fmt(S.currentShift.cashOut||0);
     g('shiftExpectedEl').textContent=fmt(shiftExpectedCash(S.currentShift));
-    g('shiftCountedInput').value=''; calcShiftDiff();
+    g('shiftCountedInput').value='';
+    /* Fondo que se deja para el siguiente turno (lo define el dueño en Admin → Turnos) */
+    const fondo = fondoCajaConfig();
+    g('shiftFondoInput').value = fondo!=null ? fondo : '';
+    calcShiftDiff();
   } else {
     g('shiftOpenArea').classList.remove('hidden'); g('shiftCloseArea').classList.add('hidden');
     g('shiftOpenInput').value='';
@@ -5850,7 +5884,26 @@ function calcDenom(pre, destino){
 }
 function limpiarDenom(pre){ document.querySelectorAll('.den-'+pre).forEach(i => i.value=''); }
 function hideShiftModal(){ g('shiftModal').classList.add('hidden'); }
+/* Fondo de caja configurado por el dueño (null = no hay uno fijo) */
+function fondoCajaConfig(){
+  const f = Number(S.permisos && S.permisos.fondoCaja);
+  return Number.isFinite(f) && f >= 0 && S.permisos.fondoCaja !== undefined && S.permisos.fondoCaja !== null && S.permisos.fondoCaja !== '' ? f : null;
+}
+/* Retiro = lo contado − lo que se deja de fondo */
+function calcRetiro(){
+  const el = g('shiftRetiroEl'); if(!el) return;
+  const raw = g('shiftCountedInput').value;
+  const counted = parseFloat(raw)||0;
+  const fondoRaw = g('shiftFondoInput').value;
+  const fondo = fondoRaw==='' ? null : (parseFloat(fondoRaw)||0);
+  if(raw===''){ el.textContent = 'Primero escribe cuánto contaste.'; el.className='text-xs text-slate-500 mt-1'; return; }
+  if(fondo===null){ el.textContent = 'Escribe cuánto dejas (0 si te llevas todo).'; el.className='text-xs text-slate-500 mt-1'; return; }
+  if(fondo > counted + 0.001){ el.textContent = 'No puedes dejar más de lo que contaste ('+fmt(counted)+').'; el.className='text-xs font-semibold text-red-600 mt-1'; return; }
+  el.innerHTML = 'Retiras: <b class="text-base">'+fmt(Math.round((counted-fondo)*100)/100)+'</b> · se quedan <b>'+fmt(fondo)+'</b> para el siguiente turno';
+  el.className = 'text-sm text-amber-900 mt-1';
+}
 function calcShiftDiff(){
+  calcRetiro();
   const expected=shiftExpectedCash(S.currentShift);
   const counted=parseFloat(g('shiftCountedInput').value)||0;
   const diff=counted-expected;
@@ -5885,7 +5938,16 @@ async function closeShift(){
   if(g('shiftCountedInput').value===''){ showToast('Escribe cuánto efectivo contaste','warning'); g('shiftCountedInput').focus(); return; }
   const counted=parseFloat(g('shiftCountedInput').value)||0;
   const expected=shiftExpectedCash(S.currentShift);
-  const ok=await confirmAction({title:'¿Cerrar turno?', msg: S.isAdmin ? 'Se registrará el corte de caja con la diferencia calculada.' : 'Se registrará tu conteo: '+fmt(counted)+'. El administrador revisará el corte.', okLabel:'Cerrar turno', icon:'🗄️'});
+  /* Fondo que se queda en la caja para el siguiente turno; lo demás se retira */
+  const fondoRaw = g('shiftFondoInput').value;
+  if(fondoRaw===''){ showToast('Escribe cuánto dejas de fondo en la caja (0 si te llevas todo)','warning'); g('shiftFondoInput').focus(); return; }
+  const fondoDejado = Math.round((parseFloat(fondoRaw)||0)*100)/100;
+  if(fondoDejado < 0 || fondoDejado > counted + 0.001){ showToast('El fondo no puede ser mayor a lo que contaste','error'); g('shiftFondoInput').focus(); return; }
+  const retiro = Math.round((counted - fondoDejado)*100)/100;
+  const ok=await confirmAction({title:'¿Cerrar turno?',
+    msg: (S.isAdmin ? 'Se registrará el corte de caja con la diferencia calculada.' : 'Se registrará tu conteo: '+fmt(counted)+'. El administrador revisará el corte.')
+       + '\n\nRetiras ' + fmt(retiro) + ' y dejas ' + fmt(fondoDejado) + ' de fondo para el siguiente turno.',
+    okLabel:'Cerrar turno', icon:'🗄️'});
   if(!ok) return;
   const now=new Date();
   const snapshot={
@@ -5898,7 +5960,8 @@ async function closeShift(){
   };
   outboxPush({id:'shiftclose_'+S.currentShift.id, type:'shiftClose', tsISO:now.toISOString(), tries:0,
     payload:{shiftId:S.currentShift.id, countedCash:counted, expectedCash:expected,
-             difference:counted-expected, closeISO:now.toISOString(), snapshot},
+             difference:counted-expected, closeISO:now.toISOString(), snapshot,
+             fondoDejado, retiro},
     label:`Corte de caja ${fmt(counted)}`});
   const diff=counted-expected;
   S.currentShift=null; saveLocalShift(); hideShiftModal();
@@ -5989,7 +6052,7 @@ async function showShiftDetail(id){
       return `<p class="text-xs font-bold text-slate-400 uppercase tracking-wide mb-1">Cambio de turno</p>
       <div class="bg-white border ${c.diff!=null&&Math.abs(c.diff)>=0.01?'border-red-200':'border-slate-200'} rounded-xl p-3 text-sm mb-3">
         ${row('Recibió la caja de', esc(c.prev.sellerName||'—'))}
-        ${row(c.prev.countedCash!=null?'Ese turno dejó (contado)':'Ese turno debía dejar', c.dejo!=null?fmt(c.dejo):'Turno sin cerrar')}
+        ${row(c.tipo==='fondo'?'Ese turno dejó de fondo':c.tipo==='config'?'Fondo de caja (configurado)':'Ese turno dejó (contado)', c.dejo!=null?fmt(c.dejo):'Turno sin cerrar')}
         ${row('Al recibir contó', fmt(s.openingCash||0))}
         ${c.diff!=null?row('Diferencia en el cambio', (c.diff>0?'+':'')+fmt(c.diff), Math.abs(c.diff)<0.01?'text-emerald-600':c.diff<0?'text-red-500':'text-blue-600'):''}
       </div>`; })()}
@@ -6001,6 +6064,8 @@ async function showShiftDetail(id){
       <div class="border-t border-dashed border-slate-200 my-1"></div>
       ${row('Efectivo esperado', fmt(s.expectedCash!=null?s.expectedCash:shiftExpectedCash(s)),'text-slate-800')}
       ${row('Efectivo contado', s.countedCash!=null?fmt(s.countedCash):'—')}
+      ${s.retiro!=null?row('Retirado al cierre', '-'+fmt(s.retiro),'text-amber-600'):''}
+      ${s.fondoDejado!=null?row('Dejó de fondo', fmt(s.fondoDejado)):''}
       ${row('Diferencia', s.difference!=null?((s.difference>=0?'+':'')+fmt(s.difference)):'—', s.difference==null?'':Math.abs(s.difference)<0.01?'text-emerald-600':s.difference<0?'text-red-500':'text-blue-600')}
     </div>
     <p class="text-xs font-bold text-slate-400 uppercase tracking-wide mb-1">Ventas del turno</p>
@@ -6038,6 +6103,8 @@ function corteLines(c){
   L.push({t:'row', l:'- Salidas', r:'-'+fmt(s.cashOut||0)});
   L.push({t:'row', k:'total', l:'Esperado', r:fmt(s.expectedCash!=null ? s.expectedCash : shiftExpectedCash(s))});
   if(s.countedCash!=null) L.push({t:'row', l:'Contado', r:fmt(s.countedCash)});
+  if(s.retiro!=null) L.push({t:'row', l:'Retirado', r:'-'+fmt(s.retiro)});
+  if(s.fondoDejado!=null) L.push({t:'row', l:'Deja de fondo', r:fmt(s.fondoDejado)});
   if(dif!=null) L.push({t:'row', l:'Diferencia', r:(dif>=0?'+':'')+fmt(dif), strong:true});
   L.push({t:'hr'});
   L.push({t:'row', l:'Tickets', r:String(s.salesCount||c.sales.length||0)});
@@ -6268,6 +6335,7 @@ async function pushOutboxItem(item){
     await withTimeout(db.collection('shifts').doc(p.shiftId).set({
       status:'closed', countedCash:p.countedCash, expectedCash:p.expectedCash,
       difference:p.difference, closeISO:p.closeISO,
+      ...(p.fondoDejado!=null ? {fondoDejado:p.fondoDejado, retiro:p.retiro} : {}),
       closeAt: FS.Timestamp.fromDate(new Date(p.closeISO)),
       ...(p.snapshot||{})
     },{merge:true}));
