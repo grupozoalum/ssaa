@@ -824,6 +824,7 @@ function arrancarDatosDelNegocio(){
   try{ subscribeBranches(); }catch(e){ console.warn(e); }
   try{ subscribeCarriers(); }catch(e){ console.warn(e); }
   try{ initTerminal(); }catch(e){ console.warn(e); }
+  setTimeout(()=>{ try{ if(typeof reanudarCobroTerminal==='function') reanudarCobroTerminal(); }catch(e){ console.warn(e); } }, 0);
 }
 
 /* ════════════════════════════════════════════════════════
@@ -1281,6 +1282,7 @@ function showNotFound(code){
 ════════════════════════════════════ */
 function addToCart(silencioso){
   if(!S.curProduct) return;
+  if(S.mpCobro){ showToast('Espera a que termine el cobro con la terminal','warning'); beep('error'); return; }
   silencioso = silencioso === true;
   
   const rawQty = g('qtyInput').value;
@@ -2365,6 +2367,7 @@ function openHardwareModal(){
   updatePrinterUI();
   updateHwRemoteLine();
   g('hardwareModal').classList.remove('hidden');
+  if(typeof pintarTerminalMP==='function') pintarTerminalMP();   // Mercado Pago Point
 }
 function hideHardwareModal(){ g('hardwareModal').classList.add('hidden'); }
 function updateHwRemoteLine(){
@@ -2840,7 +2843,17 @@ function calcMixed(){
   else { el.textContent=`Faltan ${fmt(-diff)} para cubrir total`; el.className='text-xs font-semibold text-center py-1.5 rounded-lg bg-red-50 text-red-600'; }
 }
 
+/* ════════════════════════════════════════════════════════════════
+   app.js · REEMPLAZA las líneas 2843–2941 (toda la función
+   `async function processPayment(){ … }`) por este bloque.
+   Queda dividida en dos:
+     processPayment()  valida y decide: ¿terminal o venta directa?
+     finalizarVenta()  registra la venta (tu lógica de siempre). La
+                       llama también mp-point.js cuando la terminal aprueba.
+════════════════════════════════════════════════════════════════ */
 async function processPayment(){
+  /* Hay un cobro esperando a la terminal: no se cobra dos veces */
+  if(S.mpCobro){ mostrarEsperaMP(); return; }
   if(!S.user){ showToast('Debes iniciar sesión para cobrar','error'); return; }
   { const st = estadoCobro();
     if(!st.ok){ hidePayModal(); mostrarBloqueo(st.motivo); return; }
@@ -2848,10 +2861,10 @@ async function processPayment(){
   /* Segunda revisión justo al confirmar: el stock pudo cambiar mientras
      el cliente pagaba (otra caja vendió lo mismo, llegó un snapshot…) */
   if(cartStockProblems().length){ hidePayModal(); await ensureCartStock(); return; }
-  const {subtotal, discountAmt, total: baseTotal} = cartTotals();
-  const {fee, grandTotal} = recalcTotalConComision();
+  const {subtotal, discountAmt} = cartTotals();
+  const {grandTotal} = recalcTotalConComision();
   let paid = grandTotal, cashPortion=0, cardPortion=0;
-  
+
   if(S.payMethod==='cash'){
     paid=parseFloat(g('cashInput').value)||0;
     if(paid<grandTotal){ showToast('El monto recibido es menor al total','error'); beep('error'); return; }
@@ -2862,29 +2875,52 @@ async function processPayment(){
     if(Math.abs((cashPortion+cardPortion)-grandTotal)>0.01){ showToast('Los montos mixtos no cubren el total exacto','error'); beep('error'); return; }
     paid=grandTotal;
   } else { cardPortion=grandTotal; }
-  
-  const total = grandTotal;
 
+  /* Foto de la venta: si se cobra con terminal, el carrito queda congelado
+     y la venta se registra con ESTOS datos cuando llegue el "paid". */
+  const pago = {
+    subtotal, discountAmt,
+    total: grandTotal, paid, cashPortion, cardPortion,
+    payMethod: S.payMethod,
+    cart: S.cart.map(i=>({...i})),
+    discount: S.discount ? {...S.discount} : null
+  };
+
+  /* ── Mercado Pago Point: la parte con tarjeta se cobra en la terminal física ── */
+  if(cardPortion > 0 && typeof mpModuloActivo === 'function' && mpModuloActivo()){
+    return iniciarCobroTerminal(pago);
+  }
+  return finalizarVenta(pago, {limpiarCarrito:true});
+}
+
+/* Registra la venta. `pago` trae la foto del carrito, así que también sirve
+   para una venta que la terminal aprobó minutos después. */
+async function finalizarVenta(pago, opts={}){
+  const limpiar = opts.limpiarCarrito !== false;
   const btn=g('processBtn');
-  btn.disabled=true; btn.innerHTML='<i class="fa-solid fa-spinner fa-spin mr-2"></i>Guardando…';
+  if(limpiar){ btn.disabled=true; btn.innerHTML='<i class="fa-solid fa-spinner fa-spin mr-2"></i>Guardando…'; }
   try{
     const now=new Date();
-    const localId=newLocalId();
+    const localId = pago.localId || newLocalId();
+    if(loadOutbox().some(x=>x.id===localId)) return;   // ya estaba registrada
+    const items = pago.cart || [];
+    const total = pago.total;
+    const {cashPortion, cardPortion, paid} = pago;
     /* Costo de la mercancía vendida (para calcular la ganancia real) */
-    const cogs = S.cart.reduce((s,i)=> s + (i.isRecharge?0:(Number(i.cost)||0)*i.quantity), 0);
+    const cogs = items.reduce((s,i)=> s + (i.isRecharge?0:(Number(i.cost)||0)*i.quantity), 0);
     const saleData={
       localId,
-      items:S.cart.map(i=>({...i})),
-      subtotal, discountAmt,
-      discountType: S.discount?.type||null,
-      discountValue: S.discount?.value||null,
+      items: items.map(i=>({...i})),
+      subtotal: pago.subtotal, discountAmt: pago.discountAmt,
+      discountType: pago.discount?.type||null,
+      discountValue: pago.discount?.value||null,
       total,
       cost: cogs,
       grossProfit: total - cogs,
-      payMethod:S.payMethod,
-      amountPaid:paid,
+      payMethod: pago.payMethod,
+      amountPaid: paid,
       cashPortion, cardPortion,
-      change:S.payMethod==='cash'?Math.max(0,paid-total):0,
+      change: pago.payMethod==='cash'?Math.max(0,paid-total):0,
       sellerId:S.user.uid,
       sellerName:S.user.displayName||S.user.email,
       cashierName: nombreCajeroActual(),   // lo que sale en el ticket (nunca el correo)
@@ -2898,11 +2934,12 @@ async function processPayment(){
       month:now.getMonth()+1,
       voided:false,
       createdOffline: !isOnline(),
+      ...(pago.mp ? {mp: pago.mp} : {}),   // ids de Mercado Pago para conciliar y devolver
     };
 
     /* La venta se guarda SIEMPRE en el dispositivo primero: así el cobro
        nunca se traba aunque no haya internet. Después se sube a Firebase. */
-    const stockDeltas = S.cart.filter(i=>!i.isRecharge).map(i=>({barcode:i.barcode, qty:i.quantity}));
+    const stockDeltas = items.filter(i=>!i.isRecharge).map(i=>({barcode:i.barcode, qty:i.quantity}));
     outboxPush({
       id: localId, type:'sale', tsISO: saleData.tsISO, tries:0,
       payload: saleData,
@@ -2920,13 +2957,17 @@ async function processPayment(){
       saveLocalShift();
     }
 
-    pushSaleCompletedToDisplay(total);
     beep('success');
-    hidePayModal();
-    showReceiptModal({...saleData, timestamp:now});
-    S.cart=[]; S.discount=null; renderCart();
-    hide('stateProduct'); show('stateWelcome');
-    g('searchInput').value='';
+    if(limpiar){
+      pushSaleCompletedToDisplay(total);
+      hidePayModal();
+    }
+    showReceiptModal({...saleData, timestamp:now});   // imprime solo si la impresora está conectada
+    if(limpiar){
+      S.cart=[]; S.discount=null; renderCart();
+      hide('stateProduct'); show('stateWelcome');
+      g('searchInput').value='';
+    }
     updateStockBell();
 
     if(isOnline()) flushOutbox();
@@ -2936,7 +2977,7 @@ async function processPayment(){
     showToast('Error al registrar la venta: '+e.message,'error');
     beep('error');
   } finally {
-    btn.disabled=false; btn.innerHTML='<i class="fa-solid fa-check mr-2"></i>Confirmar Pago';
+    if(limpiar){ btn.disabled=false; btn.innerHTML='<i class="fa-solid fa-check mr-2"></i>Confirmar Pago'; }
   }
 }
 
