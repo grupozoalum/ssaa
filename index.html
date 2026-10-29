@@ -2499,7 +2499,26 @@
       </div>
 
       <div>
-        <label class="text-xs font-semibold text-slate-500 mb-1 block">Productos que trae</label>
+        <label class="text-xs font-semibold text-slate-500 mb-1 block">Tipo de promoción</label>
+        <div class="flex gap-2">
+          <button id="pm_tipoFijo" type="button" onclick="setTipoPromo('fijo')" class="flex-1 rounded-xl border-2 px-3 py-2 text-left">
+            <span class="block text-sm font-bold text-slate-800">Paquete fijo</span>
+            <span class="block text-[11px] text-slate-500">Siempre los mismos (ej. 2 Tecate x $60)</span>
+          </button>
+          <button id="pm_tipoMix" type="button" onclick="setTipoPromo('mix')" class="flex-1 rounded-xl border-2 px-3 py-2 text-left">
+            <span class="block text-sm font-bold text-slate-800">A elegir</span>
+            <span class="block text-[11px] text-slate-500">Cualquier combinación (ej. 2 papas x $38)</span>
+          </button>
+        </div>
+      </div>
+      <div id="pm_cantidadBox" class="hidden">
+        <label class="text-xs font-semibold text-slate-500 mb-1 block">¿Cuántas piezas lleva la promo?</label>
+        <input id="pm_cantidad" type="number" inputmode="numeric" min="2" step="1" value="2" oninput="pintarPromoItems(true)"
+          class="w-28 border border-slate-200 rounded-xl px-4 py-3 text-sm font-bold focus:outline-none focus:ring-2 focus:ring-indigo-500 min-h-[48px]">
+      </div>
+
+      <div>
+        <label id="pm_itemsLbl" class="text-xs font-semibold text-slate-500 mb-1 block">Productos que trae</label>
         <div id="pm_buscarWrap" class="relative">
           <input id="pm_buscar" type="search" autocomplete="off" placeholder="Busca o escanea un producto…"
             oninput="pmBuscar(this.value)" onkeydown="pmBuscarEnter(event)"
@@ -2657,10 +2676,10 @@
 <!-- ▌TICKET PARA IMPRIMIR ▐ — solo se ve al imprimir desde el navegador -->
 <div id="ticketPrint" aria-hidden="true"></div>
 
-<script src="app.js?v=20261029o"></script>
-<script src="mp-point.js?v=20261029o"></script>
-<script src="importar-excel.js?v=20261029o"></script>
-<script src="promos.js?v=20261029o"></script>
-<script src="devoluciones.js?v=20261029o"></script>
+<script src="app.js?v=20261029p"></script>
+<script src="mp-point.js?v=20261029p"></script>
+<script src="importar-excel.js?v=20261029p"></script>
+<script src="promos.js?v=20261029p"></script>
+<script src="devoluciones.js?v=20261029p"></script>
 </body>
 </html>

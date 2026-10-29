@@ -14,7 +14,10 @@
    producto que trae. El dueño la crea aquí; el vendedor solo la vende.
 ════════════════════════════════════════════════════════════════ */
 
-const PM = { id:null, items:[] };   // promo que se está editando
+const PM = { id:null, items:[], tipo:'fijo' };   // promo que se está editando
+/* tipo 'fijo': siempre los mismos productos y cantidades (2 caguamas Tecate = $60)
+   tipo 'mix' : N piezas a elegir entre varios productos (2 x $38 de Sabritas,
+                Ruffles o Doritos, en cualquier combinación) */
 
 /* ── Datos en vivo (lo usan la caja y el panel) ── */
 function subscribePromos(){
@@ -55,14 +58,16 @@ function renderPromosTable(){
   }
   body.innerHTML = lista.map(pr=>{
     const pp = promoComoProducto(pr);
-    const normal = precioNormalPromo(pp.items);
+    const esMix = pp.tipo === 'mix';
+    const precios = esMix ? pp.opciones.map(o=>Number((S.products.find(x=>x.barcode===o.barcode)||{}).price)||0).filter(n=>n>0) : [];
+    const normal = esMix ? (precios.length ? Math.min(...precios)*pp.cantidad : 0) : precioNormalPromo(pp.items);
     const ahorro = normal - pp.price;
     const st = promoStock(pp);
-    const faltan = pp.items.filter(c=>!S.products.some(x=>x.barcode===c.barcode && x.active!==false));
+    const faltan = (esMix ? pp.opciones : pp.items).filter(c=>!S.products.some(x=>x.barcode===c.barcode && x.active!==false));
     const activa = pr.active !== false;
     return `<tr class="${activa?'':'opacity-50'}">
       <td class="px-3 sm:px-4 py-3">
-        <p class="font-semibold text-slate-800 break-anywhere">${esc(pp.name)}</p>
+        <p class="font-semibold text-slate-800 break-anywhere">${esc(pp.name)}${esMix?' <span class="text-[10px] font-bold bg-violet-100 text-violet-700 px-1.5 py-0.5 rounded">A ELEGIR</span>':''}</p>
         <p class="text-[11px] text-slate-400 font-mono">${esc(pp.code || '—')}</p>
       </td>
       <td class="px-3 sm:px-4 py-3 text-xs text-slate-600">
@@ -71,7 +76,7 @@ function renderPromosTable(){
       </td>
       <td class="px-3 sm:px-4 py-3 text-right whitespace-nowrap">
         <p class="font-black text-indigo-700 num">${fmt(pp.price)}</p>
-        ${normal>0 ? `<p class="text-[11px] num ${ahorro>0?'text-emerald-600':'text-amber-600'}">${ahorro>0 ? 'Ahorra '+fmt(ahorro) : 'Normal '+fmt(normal)}</p>` : ''}
+        ${normal>0 ? `<p class="text-[11px] num ${ahorro>0?'text-emerald-600':'text-amber-600'}">${ahorro>0 ? 'Ahorra '+(esMix?'desde ':'')+fmt(ahorro) : 'Normal '+fmt(normal)}</p>` : ''}
       </td>
       <td class="px-3 sm:px-4 py-3 text-center">
         ${!activa ? '<span class="text-xs px-2 py-0.5 rounded-full bg-slate-100 text-slate-500">Pausada</span>'
@@ -95,7 +100,12 @@ function abrirPromo(id){
   if(!S.isAdmin){ showToast('Solo el dueño puede crear promociones','error'); return; }
   const pr = id ? (S.promos||[]).find(x=>x.id===id) : null;
   PM.id = pr ? pr.id : null;
-  PM.items = pr ? (pr.items||[]).map(c=>({barcode:c.barcode, name:c.name||'', qty:Number(c.qty)||1})) : [];
+  PM.tipo = pr && pr.tipo === 'mix' ? 'mix' : 'fijo';
+  PM.items = !pr ? []
+    : PM.tipo === 'mix' ? (pr.opciones||[]).map(c=>({barcode:c.barcode, name:c.name||'', qty:1}))
+    : (pr.items||[]).map(c=>({barcode:c.barcode, name:c.name||'', qty:Number(c.qty)||1}));
+  if(g('pm_cantidad')) g('pm_cantidad').value = pr && pr.tipo === 'mix' ? (pr.cantidad||2) : 2;
+  pintarTipoPromo();
   g('promoModalTitle').textContent = pr ? 'Editar promoción' : 'Nueva promoción';
   g('pm_name').value  = pr ? (pr.name||'') : '';
   g('pm_code').value  = pr ? (pr.code||'') : '';
@@ -110,6 +120,23 @@ function abrirPromo(id){
   setTimeout(()=>g('pm_name').focus(), 50);
 }
 function hidePromoModal(){ g('promoModal')?.classList.add('hidden'); }
+
+function setTipoPromo(t){
+  PM.tipo = t === 'mix' ? 'mix' : 'fijo';
+  if(PM.tipo === 'mix') PM.items.forEach(c=>c.qty = 1);
+  pintarTipoPromo();
+  pintarPromoItems();
+}
+function pintarTipoPromo(){
+  const mix = PM.tipo === 'mix';
+  const on = 'flex-1 rounded-xl border-2 px-3 py-2 text-left border-indigo-500 bg-indigo-50';
+  const off = 'flex-1 rounded-xl border-2 px-3 py-2 text-left border-slate-200 bg-white hover:bg-slate-50';
+  if(g('pm_tipoFijo')) g('pm_tipoFijo').className = mix ? off : on;
+  if(g('pm_tipoMix'))  g('pm_tipoMix').className  = mix ? on : off;
+  g('pm_cantidadBox')?.classList.toggle('hidden', !mix);
+  if(g('pm_itemsLbl')) g('pm_itemsLbl').textContent = mix ? 'Productos que entran en la promo (el cliente combina como quiera)' : 'Productos que trae';
+  if(g('pm_buscar')) g('pm_buscar').placeholder = mix ? 'Busca o escanea cada sabor / marca que entra…' : 'Busca o escanea un producto…';
+}
 
 /* Buscador de productos para armar la promo */
 function pmBuscar(q){
@@ -140,7 +167,12 @@ function pmBuscarEnter(e){
 function pmAgregar(barcode){
   const p = S.products.find(x=>x.barcode===barcode); if(!p) return;
   const ya = PM.items.find(c=>c.barcode===barcode);
-  if(ya) ya.qty = round3(ya.qty + 1);
+  if(PM.tipo === 'mix'){
+    if(p.isBulk){ showToast('Los productos a granel no pueden ir en una promo «a elegir»','warning'); return; }
+    if(ya){ showToast('Ese producto ya está en la lista','info'); }
+    else PM.items.push({barcode, name:p.name, qty:1});
+  }
+  else if(ya) ya.qty = round3(ya.qty + 1);
   else PM.items.push({barcode, name:p.name, qty:1});
   g('pm_buscar').value = '';
   g('pm_resultados').classList.add('hidden');
@@ -168,21 +200,24 @@ function pintarPromoItems(soloResumen){
   if(!soloResumen){
     box.innerHTML = PM.items.length ? PM.items.map((c,i)=>{
       const p = S.products.find(x=>x.barcode===c.barcode);
+      const quitar = `<button type="button" onclick="pmQuitar(${i})" aria-label="Quitar" class="w-8 h-8 text-red-400 hover:text-red-600"><i class="fa-solid fa-xmark"></i></button>`;
+      /* «A elegir»: sin cantidades, solo la lista de productos que entran */
+      const controles = PM.tipo === 'mix' ? quitar : `
+          ${p?.isBulk ? '' : `<button type="button" onclick="pmMas(${i},-1)" class="w-8 h-8 rounded-full bg-white border border-slate-200 font-bold">−</button>`}
+          <input type="number" inputmode="decimal" min="${p?.isBulk?'0.001':'1'}" step="${p?.isBulk?'0.001':'1'}" value="${c.qty}"
+            onchange="pmCantidad(${i}, this.value)" class="w-16 text-center border border-slate-200 rounded-lg py-1.5 text-sm font-bold num" aria-label="Cantidad">
+          ${p?.isBulk ? '<span class="text-xs text-slate-500">kg</span>' : `<button type="button" onclick="pmMas(${i},1)" class="w-8 h-8 rounded-full bg-white border border-slate-200 font-bold">+</button>`}
+          ${quitar}`;
       return `<div class="flex items-center gap-2 bg-slate-50 border border-slate-200 rounded-xl px-2.5 py-2">
         <div class="min-w-0 flex-1">
           <p class="text-sm font-semibold text-slate-800 truncate">${esc(p?.name || c.name || c.barcode)}</p>
           <p class="text-[10px] ${p?'text-slate-400':'text-red-500'} truncate">${p ? fmt(p.price)+(p.isBulk?' / kg':' c/u')+(typeof p.stock==='number'?' · hay '+round3(p.stock):'') : 'Este producto ya no existe'}</p>
         </div>
-        <div class="flex items-center gap-1 shrink-0">
-          ${p?.isBulk ? '' : `<button type="button" onclick="pmMas(${i},-1)" class="w-8 h-8 rounded-full bg-white border border-slate-200 font-bold">−</button>`}
-          <input type="number" inputmode="decimal" min="${p?.isBulk?'0.001':'1'}" step="${p?.isBulk?'0.001':'1'}" value="${c.qty}"
-            onchange="pmCantidad(${i}, this.value)" class="w-16 text-center border border-slate-200 rounded-lg py-1.5 text-sm font-bold num" aria-label="Cantidad">
-          ${p?.isBulk ? '<span class="text-xs text-slate-500">kg</span>' : `<button type="button" onclick="pmMas(${i},1)" class="w-8 h-8 rounded-full bg-white border border-slate-200 font-bold">+</button>`}
-          <button type="button" onclick="pmQuitar(${i})" aria-label="Quitar" class="w-8 h-8 text-red-400 hover:text-red-600"><i class="fa-solid fa-xmark"></i></button>
-        </div>
+        <div class="flex items-center gap-1 shrink-0">${controles}</div>
       </div>`;
-    }).join('') : '<p class="text-xs text-slate-400 text-center py-3 border border-dashed border-slate-200 rounded-xl">Busca arriba los productos que trae la promoción.</p>';
+    }).join('') : `<p class="text-xs text-slate-400 text-center py-3 border border-dashed border-slate-200 rounded-xl">${PM.tipo === 'mix' ? 'Agrega todos los productos que entran (ej. Sabritas, Ruffles, Doritos).' : 'Busca arriba los productos que trae la promoción.'}</p>`;
   }
+  if(PM.tipo === 'mix'){ pintarResumenMix(); return; }
   const normal = precioNormalPromo(PM.items);
   const precio = Number(String(g('pm_price').value||'').replace(',', '.')) || 0;
   const costo  = costoPromo({items:PM.items});
@@ -195,6 +230,23 @@ function pintarPromoItems(soloResumen){
     ${costo>0 && precio>0 ? `<div class="flex justify-between ${precio-costo>=0?'text-slate-500':'text-red-600'}"><span>${precio-costo>=0?'Ganancia':'Pierdes'} por promo</span><span class="num font-semibold">${fmt(Math.abs(precio-costo))}</span></div>` : ''}`;
 }
 
+/* Resumen «a elegir»: el precio normal depende de qué combine el cliente */
+function pintarResumenMix(){
+  const r = g('pm_resumen');
+  const n = Math.max(2, parseInt(g('pm_cantidad')?.value)||2);
+  const precios = PM.items.map(c=>Number((S.products.find(x=>x.barcode===c.barcode)||{}).price)||0).filter(x=>x>0);
+  const costos  = PM.items.map(c=>Number((S.products.find(x=>x.barcode===c.barcode)||{}).cost)||0).filter(x=>x>0);
+  const precio = Number(String(g('pm_price').value||'').replace(',', '.')) || 0;
+  if(!precios.length){ r.innerHTML = ''; return; }
+  const min = Math.min(...precios)*n, max = Math.max(...precios)*n;
+  const costoMax = costos.length ? Math.max(...costos)*n : 0;
+  r.innerHTML = `
+    <div class="flex justify-between"><span>${n} piezas por separado</span><span class="num font-semibold">${min===max ? fmt(min) : fmt(min)+' a '+fmt(max)}</span></div>
+    ${precio>0 ? `<div class="flex justify-between ${min-precio>0?'text-emerald-600':'text-amber-600'}"><span>${min-precio>0?'El cliente ahorra':'Ojo: con algunas combinaciones no es más barata'}</span><span class="num font-bold">${min-precio>0 ? (min===max?fmt(min-precio):fmt(min-precio)+' a '+fmt(max-precio)) : ''}</span></div>` : ''}
+    ${costoMax>0 && precio>0 && precio < costoMax ? `<div class="flex justify-between text-red-600"><span>Con la combinación más cara pierdes</span><span class="num font-semibold">${fmt(costoMax-precio)}</span></div>` : ''}
+    <p class="text-[11px] text-slate-400">En la caja: al escanear ${n} piezas de esta lista (en cualquier combinación) se aplica sola.</p>`;
+}
+
 async function guardarPromo(){
   if(!S.isAdmin){ showToast('Solo el dueño puede crear promociones','error'); return; }
   const err = m=>{ const e=g('pm_err'); e.textContent=m; e.classList.remove('hidden'); beep('error'); };
@@ -204,10 +256,14 @@ async function guardarPromo(){
   const items = PM.items.filter(c=>c.barcode && Number(c.qty)>0)
                         .map(c=>({barcode:c.barcode, name:(S.products.find(x=>x.barcode===c.barcode)?.name || c.name || '').slice(0,120), qty:Number(c.qty)}));
 
-  if(!name) return err('Ponle un nombre (ej. Caguamas 2x60).');
+  const esMix = PM.tipo === 'mix';
+  const cantidad = Math.max(0, parseInt(g('pm_cantidad')?.value)||0);
+  if(!name) return err(esMix ? 'Ponle un nombre (ej. Papas 2 x $38).' : 'Ponle un nombre (ej. Caguamas 2x60).');
   if(!(price>0)) return err('El precio de la promoción debe ser mayor a $0.');
-  if(!items.length) return err('Agrega al menos un producto a la promoción.');
-  if(items.length===1 && items[0].qty===1) return err('Con 1 sola pieza no es promoción: cambia el precio del producto, o sube la cantidad (ej. 2).');
+  if(!items.length) return err(esMix ? 'Agrega los productos que entran en la promo.' : 'Agrega al menos un producto a la promoción.');
+  if(esMix && cantidad < 2) return err('¿Cuántas piezas lleva la promo? Debe ser 2 o más (ej. 2 x $38).');
+  if(esMix && items.some(c=>(S.products.find(x=>x.barcode===c.barcode)||{}).isBulk)) return err('Quita los productos a granel: no pueden ir en una promo «a elegir».');
+  if(!esMix && items.length===1 && items[0].qty===1) return err('Con 1 sola pieza no es promoción: cambia el precio del producto, o sube la cantidad (ej. 2).');
 
   /* Código: opcional. Si lo dejan vacío se arma uno. No puede chocar con un producto ni con otra promo. */
   if(!code) code = 'PROMO-' + Math.floor(1000 + Math.random()*9000);
@@ -215,7 +271,11 @@ async function guardarPromo(){
   if(S.products.some(p=>sinAcentos(p.barcode)===cn)) return err(`El código «${code}» ya es de un producto. Usa otro.`);
   if((S.promos||[]).some(p=>p.id!==PM.id && sinAcentos(p.code||'')===cn)) return err(`Ya hay otra promoción con el código «${code}».`);
 
-  const data = { name, code, price, items, active: !!g('pm_active').checked,
+  const data = { name, code, price, active: !!g('pm_active').checked,
+                 tipo: esMix ? 'mix' : 'fijo',
+                 items: esMix ? [] : items,
+                 opciones: esMix ? items.map(({barcode, name})=>({barcode, name})) : [],
+                 cantidad: esMix ? cantidad : 0,
                  auto: g('pm_auto') ? !!g('pm_auto').checked : true,
                  updatedAt: FS.FieldValue.serverTimestamp() };
   const btn = g('pm_btn'); btn.disabled = true;

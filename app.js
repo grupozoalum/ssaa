@@ -348,13 +348,22 @@ function promoComoProducto(pr){
     barcode: PROMO_PREFIJO + pr.id, isPromo:true, promoId: pr.id,
     code: pr.code || '', name: pr.name || 'Promoción', price: Number(pr.price)||0,
     category: 'Promoción', active: pr.active !== false, auto: pr.auto !== false,
-    items: (pr.items||[]).map(c=>({barcode:String(c.barcode||''), name:c.name||'', qty:Number(c.qty)||0}))
+    /* tipo 'fijo' = siempre los mismos productos (2 caguamas Tecate)
+       tipo 'mix'  = N piezas a elegir entre varios productos, en cualquier
+                     combinación (2 x $38 de Sabritas, Ruffles o Doritos) */
+    tipo: pr.tipo === 'mix' ? 'mix' : 'fijo',
+    cantidad: pr.tipo === 'mix' ? Math.max(2, parseInt(pr.cantidad)||2) : 0,
+    opciones: pr.tipo === 'mix' ? (pr.opciones||[]).map(c=>({barcode:String(c.barcode||''), name:c.name||''})).filter(c=>c.barcode) : [],
+    items: pr.tipo === 'mix' ? [] : (pr.items||[]).map(c=>({barcode:String(c.barcode||''), name:c.name||'', qty:Number(c.qty)||0}))
                          .filter(c=>c.barcode && c.qty>0)
   };
 }
+/* Promo «a elegir» sin combinación todavía (la plantilla, no un renglón del carrito) */
+const esMixPlantilla = p => !!(p && p.isPromo && p.tipo === 'mix' && !(p.items||[]).length);
 /* Las promos que se pueden vender hoy */
 function promosActivas(){
-  return (S.promos||[]).filter(p=>p.active!==false).map(promoComoProducto).filter(p=>p.items.length && p.price>0);
+  return (S.promos||[]).filter(p=>p.active!==false).map(promoComoProducto)
+    .filter(p=>p.price>0 && (p.tipo==='mix' ? p.opciones.length && p.cantidad>=2 : p.items.length));
 }
 /* Busca por código de la promo o por su clave interna PROMO:id */
 function promoPorCodigo(code){
@@ -364,6 +373,18 @@ function promoPorCodigo(code){
 }
 /* Promos alcanzables con el stock (sin contar el carrito). null = ningún producto lleva control */
 function promoStock(pr){
+  if(esMixPlantilla(pr)){
+    /* A elegir: alcanza para (suma de existencias de las opciones) / piezas */
+    let total = 0, alguna = false;
+    for(const o of pr.opciones||[]){
+      const p = S.products.find(x=>x.barcode===o.barcode);
+      if(!p || p.active===false) continue;
+      alguna = true;
+      const st = stockOf(p); if(st===null) return null;
+      total += Math.max(0, st);
+    }
+    return alguna ? Math.floor((total + 1e-9) / pr.cantidad) : 0;
+  }
   let max = null;
   for(const c of pr.items||[]){
     const p = S.products.find(x=>x.barcode===c.barcode);
@@ -376,6 +397,7 @@ function promoStock(pr){
 }
 /* Cuántas promos más caben, descontando lo que ya está en el carrito */
 function promoLibre(pr){
+  if(esMixPlantilla(pr)) return 0;   // se arma escaneando los productos, no se agrega «en blanco»
   let max = Infinity;
   for(const c of pr.items||[]){
     const p = S.products.find(x=>x.barcode===c.barcode);
@@ -426,7 +448,43 @@ function aplicarPromosAuto(){
     S.lastAdded = pr.barcode;
     aplicadas.push(pr.name);
   }
+  aplicarPromosMix(aplicadas);   // después las «a elegir» (2 x $38 en cualquier combinación)
   return aplicadas;
+}
+/* Promos «a elegir»: si en la venta hay N piezas sueltas de sus opciones
+   (en cualquier combinación), se cambian por la promo. Se toman primero
+   las piezas más caras (el cliente siempre sale ganando). Cada combinación
+   distinta es su propio renglón (para descontar bien el inventario). */
+function aplicarPromosMix(aplicadas){
+  const sueltos = ops => S.cart.filter(i=>ops.has(i.barcode) && !i.isPromo && !i.isCredit && !i.isRecharge && !i.isBulk && i.quantity>=1);
+  const mixes = promosActivas().filter(pr => pr.tipo==='mix' && pr.auto !== false);
+  for(const pr of mixes){
+    const ops = new Set(pr.opciones.map(o=>o.barcode));
+    for(let vuelta=0; vuelta<200; vuelta++){
+      const lista = sueltos(ops);
+      if(lista.reduce((n,i)=>n + Math.floor(i.quantity), 0) < pr.cantidad) break;
+      const tomar = []; let falta = pr.cantidad, normal = 0;
+      for(const it of [...lista].sort((a,b)=>b.price-a.price)){
+        const n = Math.min(falta, Math.floor(it.quantity));
+        if(n>0){ tomar.push([it, n]); falta -= n; normal += it.price*n; }
+        if(!falta) break;
+      }
+      if(falta>0 || normal - pr.price <= 0.001) break;   // no alcanza o no conviene
+      tomar.forEach(([it, n])=>{
+        it.quantity = round3(it.quantity - n);
+        it.subtotal = it.price * it.quantity;
+        if(it.quantity <= 0) S.cart = S.cart.filter(x=>x!==it);
+      });
+      const items = tomar.map(([it, n])=>({barcode:it.barcode, name:it.name, qty:n}))
+                         .sort((a,b)=>a.barcode<b.barcode?-1:1);
+      const clave = pr.barcode + ':' + items.map(c=>c.barcode+'x'+c.qty).join('+');
+      const ex = S.cart.find(i=>i.barcode===clave);
+      if(ex){ ex.quantity += 1; ex.subtotal = ex.price * ex.quantity; }
+      else S.cart.push({...renglonPromo({...pr, items}, 1), barcode:clave, promoTipo:'mix'});
+      S.lastAdded = clave;
+      aplicadas.push(pr.name);
+    }
+  }
 }
 function avisarPromosAuto(lista){
   if(!lista.length) return;
@@ -436,6 +494,8 @@ function avisarPromosAuto(lista){
 
 /* Texto corto de lo que incluye: «2 Caguama Tecate + 1 Hielo» */
 function contenidoPromo(pr){
+  if(!(pr.items||[]).length && (pr.opciones||[]).length)
+    return `${pr.cantidad} a elegir: ` + pr.opciones.map(o=>o.name || (S.products.find(x=>x.barcode===o.barcode)||{}).name || o.barcode).join(' / ');
   return (pr.items||[]).map(c=>{
     const p = S.products.find(x=>x.barcode===c.barcode);
     return `${round3(c.qty)}${p?.isBulk?' kg':''} ${c.name || p?.name || c.barcode}`;
@@ -1662,6 +1722,12 @@ function showNotFound(code){
 ════════════════════════════════════ */
 function addToCart(silencioso){
   if(!S.curProduct) return;
+  if(esMixPlantilla(S.curProduct)){
+    const p = S.curProduct;
+    showToast(`«${p.name}»: escanea ${p.cantidad} productos de la promo (cualquier combinación) y se aplica sola.`,'info');
+    showProduct(p);
+    return;
+  }
   if(S.mpCobro){ showToast('Espera a que termine el cobro con la terminal','warning'); beep('error'); return; }
   silencioso = silencioso === true;
   
