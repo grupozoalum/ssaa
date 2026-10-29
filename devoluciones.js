@@ -121,7 +121,9 @@ function pintarVentasTurno(){
       devTotal > 0 ? `<span class="text-[10px] font-bold px-1.5 py-0.5 rounded bg-slate-100 text-slate-600">Devuelto ${fmt(devTotal)}</span>` : ''
     ].join(' ');
     const resumen = (s.items || []).filter(i => !i.isCredit).map(i => i.name).join(', ') || (s.items || []).map(i => i.name).join(', ');
-    return `<button type="button" onclick="verVentaTurno('${esc(s.id)}')" class="w-full text-left px-3 py-3 hover:bg-slate-50 border-b border-slate-100 flex items-center gap-3 ${s.voided ? 'opacity-60' : ''}">
+    const esDev = !!s.devolucion && !(s.items || []).some(i => !i.isCredit);
+    const filaCls = esDev ? 'bg-red-50 hover:bg-red-100 border-l-4 border-l-red-500' : s.devolucion ? 'bg-orange-50/60 hover:bg-orange-50 border-l-4 border-l-orange-400' : 'hover:bg-slate-50';
+    return `<button type="button" onclick="verVentaTurno('${esc(s.id)}')" class="w-full text-left px-3 py-3 ${filaCls} border-b border-slate-100 flex items-center gap-3 ${s.voided ? 'opacity-60' : ''}">
       <div class="text-center shrink-0 w-14">
         <p class="text-sm font-bold text-slate-700 num">${horaVenta(s)}</p>
         <p class="text-[10px] text-slate-400 font-mono">#${esc(folioVenta(s))}</p>

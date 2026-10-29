@@ -138,6 +138,10 @@
           class="bg-indigo-600 hover:bg-indigo-700 active:bg-indigo-800 text-white px-3.5 rounded-xl transition flex items-center gap-2 text-sm font-medium min-w-[44px] min-h-[44px]">
           <i class="fa-solid fa-camera"></i><span class="hidden sm:inline">Escanear</span>
         </button>
+        <button id="btnNuevoProducto" onclick="showProductModal(false)" title="Dar de alta un producto nuevo"
+          class="hidden max-sm:!hidden bg-emerald-600 hover:bg-emerald-700 active:bg-emerald-800 text-white px-3.5 rounded-xl transition items-center gap-2 text-sm font-medium min-w-[44px] min-h-[44px]">
+          <i class="fa-solid fa-square-plus"></i><span class="hidden lg:inline">Nuevo</span>
+        </button>
         <button onclick="doSearch()"
           class="bg-slate-600 hover:bg-slate-700 active:bg-slate-800 text-white px-3.5 rounded-xl transition text-sm min-w-[44px] min-h-[44px]">
           <i class="fa-solid fa-magnifying-glass"></i>
@@ -902,6 +906,13 @@
           <i class="fa-solid fa-user-plus"></i><span class="hidden sm:inline">Agregar</span>
         </button>
       </div>
+      <label class="flex items-start gap-3 bg-white border border-slate-200 rounded-xl p-3 mb-4 cursor-pointer shadow-sm">
+        <input id="perm_altaProductos" type="checkbox" checked onchange="guardarPermisoAlta(this)" class="accent-indigo-600 w-5 h-5 mt-0.5 shrink-0">
+        <span>
+          <span class="block text-sm font-semibold text-slate-800">Los vendedores pueden dar de alta productos nuevos</span>
+          <span class="block text-xs text-slate-400 mt-0.5">Desde la caja (botón verde «Nuevo» o cuando un código no existe). No pueden editar, cambiar precios ni borrar productos que ya existen, y no ven el costo. Cada alta queda con el nombre de quien la hizo.</span>
+        </span>
+      </label>
       <div id="sellersGrid" class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
         <div class="col-span-3 text-center py-10 text-slate-400">Cargando…</div>
       </div>
@@ -1476,7 +1487,7 @@
       </div>
       <div class="flex gap-3 pt-1">
         <button onclick="hideProductModal()" class="flex-1 bg-slate-100 hover:bg-slate-200 text-slate-700 py-3 rounded-xl font-semibold text-sm transition min-h-[48px]">Cancelar</button>
-        <button onclick="saveProduct()" class="flex-1 bg-indigo-600 hover:bg-indigo-700 active:bg-indigo-800 text-white py-3 rounded-xl font-semibold text-sm transition min-h-[48px]">
+        <button id="pf_saveBtn" onclick="saveProduct()" class="flex-1 disabled:opacity-50 bg-indigo-600 hover:bg-indigo-700 active:bg-indigo-800 text-white py-3 rounded-xl font-semibold text-sm transition min-h-[48px]">
           <i class="fa-solid fa-floppy-disk mr-1"></i>Guardar
         </button>
       </div>
@@ -2457,6 +2468,10 @@
         <input id="pm_active" type="checkbox" checked class="accent-indigo-600 w-4 h-4">
         Activa (aparece en la caja)
       </label>
+      <label class="flex items-start gap-2 text-sm text-slate-600 cursor-pointer">
+        <input id="pm_auto" type="checkbox" checked class="accent-indigo-600 w-4 h-4 mt-0.5 shrink-0">
+        <span>Aplicar sola al escanear<br><span class="text-[11px] text-slate-400">Si el cajero escanea los productos sueltos (ej. 2 caguamas), se cambian solos por la promoción.</span></span>
+      </label>
       <p id="pm_err" class="text-red-500 text-xs hidden px-3 py-2 bg-red-50 rounded-lg"></p>
       <div class="flex gap-3 pt-1">
         <button onclick="hidePromoModal()" class="flex-1 bg-slate-100 hover:bg-slate-200 text-slate-700 py-3 rounded-xl font-semibold text-sm transition min-h-[48px]">Cancelar</button>
@@ -2595,10 +2610,10 @@
 <!-- ▌TICKET PARA IMPRIMIR ▐ — solo se ve al imprimir desde el navegador -->
 <div id="ticketPrint" aria-hidden="true"></div>
 
-<script src="app.js?v=20261029f"></script>
-<script src="mp-point.js?v=20261029f"></script>
-<script src="importar-excel.js?v=20261029f"></script>
-<script src="promos.js?v=20261029f"></script>
-<script src="devoluciones.js?v=20261029f"></script>
+<script src="app.js?v=20261029h"></script>
+<script src="mp-point.js?v=20261029h"></script>
+<script src="importar-excel.js?v=20261029h"></script>
+<script src="promos.js?v=20261029h"></script>
+<script src="devoluciones.js?v=20261029h"></script>
 </body>
 </html>

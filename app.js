@@ -159,7 +159,8 @@ const COLS_DEL_NEGOCIO = new Set([
   'terminals','branches','rechargeCarriers','inventoryEntries',
   'customers','counters','contratos','accessRequests',
   'aperturasCajon',  // bitácora: quién abrió el cajón sin venta y cuándo
-  'promos'           // promociones / paquetes (ej. caguamas 2x60)
+  'promos',          // promociones / paquetes (ej. caguamas 2x60)
+  'config'           // ajustes del negocio que decide el dueño (config/permisos)
 ]);
 
 const db = {
@@ -207,6 +208,7 @@ const S = {
   editingBranchId:null, reassignSellerUid:null,
   rechargeCarriers:[], carrierUnsub:null, editingCarrierId:null,
   promos:[], promoUnsub:null,   // promociones (ver promos.js)
+  permisos:{}, permisosUnsub:null,   // config/permisos: lo que el dueño deja hacer a los vendedores
   rechargeSel:{carrierId:null, carrierName:'', commissionPct:0, amount:0},
   /* ── Inventario / gastos / offline ── */
   entryProduct:null, entries:[], expenses:[], editingExpenseId:null,
@@ -345,7 +347,7 @@ function promoComoProducto(pr){
   return {
     barcode: PROMO_PREFIJO + pr.id, isPromo:true, promoId: pr.id,
     code: pr.code || '', name: pr.name || 'Promoción', price: Number(pr.price)||0,
-    category: 'Promoción', active: pr.active !== false,
+    category: 'Promoción', active: pr.active !== false, auto: pr.auto !== false,
     items: (pr.items||[]).map(c=>({barcode:String(c.barcode||''), name:c.name||'', qty:Number(c.qty)||0}))
                          .filter(c=>c.barcode && c.qty>0)
   };
@@ -390,6 +392,48 @@ function costoPromo(pr){
     return s + (Number(p?.cost)||0) * c.qty;
   }, 0);
 }
+/* Renglón de carrito para una promoción */
+function renglonPromo(p, qty){
+  return { barcode:p.barcode, name:p.name, price:p.price, cost:costoPromo(p), quantity:qty, subtotal:p.price*qty,
+           isPromo:true, promoId:p.promoId, promoCode:p.code||'', items:p.items.map(c=>({barcode:c.barcode, name:c.name, qty:c.qty})) };
+}
+/* ── Promociones automáticas ──
+   Si en la venta se juntan los productos de una promo (ej. 2 caguamas
+   sueltas y existe «2x60»), se cambian solos por la promoción.
+   Solo promos marcadas como automáticas, con piezas enteras (no granel)
+   y que de verdad salgan más baratas. Primero la que más ahorra. */
+function aplicarPromosAuto(){
+  const sueltoDe = b => S.cart.find(i=>i.barcode===b && !i.isPromo && !i.isCredit && !i.isRecharge && !i.isBulk);
+  const candidatas = promosActivas().filter(pr => pr.auto !== false && pr.items.length
+    && pr.items.every(c => Number.isInteger(c.qty) && c.qty>0 && !(S.products.find(x=>x.barcode===c.barcode)||{}).isBulk))
+    .map(pr => ({ pr, ahorro: pr.items.reduce((n,c)=>n + (Number((S.products.find(x=>x.barcode===c.barcode)||{}).price)||0)*c.qty, 0) - pr.price }))
+    .filter(x => x.ahorro > 0.001)
+    .sort((a,b) => b.ahorro - a.ahorro);
+  const aplicadas = [];
+  for(let vuelta=0; vuelta<200 && candidatas.length; vuelta++){
+    const hit = candidatas.find(({pr}) => pr.items.every(c => { const it = sueltoDe(c.barcode); return it && it.quantity >= c.qty; }));
+    if(!hit) break;
+    const pr = hit.pr;
+    pr.items.forEach(c=>{
+      const it = sueltoDe(c.barcode);
+      it.quantity = round3(it.quantity - c.qty);
+      it.subtotal = it.price * it.quantity;
+      if(it.quantity <= 0) S.cart = S.cart.filter(x=>x!==it);
+    });
+    const ex = S.cart.find(i=>i.barcode===pr.barcode);
+    if(ex){ ex.quantity += 1; ex.subtotal = ex.price * ex.quantity; }
+    else S.cart.push(renglonPromo(pr, 1));
+    S.lastAdded = pr.barcode;
+    aplicadas.push(pr.name);
+  }
+  return aplicadas;
+}
+function avisarPromosAuto(lista){
+  if(!lista.length) return;
+  const nombres = [...new Set(lista)];
+  showToast('🏷️ Promoción aplicada: ' + nombres.join(', '), 'success');
+}
+
 /* Texto corto de lo que incluye: «2 Caguama Tecate + 1 Hielo» */
 function contenidoPromo(pr){
   return (pr.items||[]).map(c=>{
@@ -822,6 +866,7 @@ auth.onAuthStateChanged(async user => {
     g('shiftBtn').classList.remove('hidden'); g('shiftBtn').classList.add('flex');
     g('hwBtn').classList.remove('hidden');
     g('ventasBtn')?.classList.remove('hidden'); g('ventasBtn')?.classList.add('flex');
+    pintarPermisosUI();
     restoreLocalCart();
     checkCurrentShift();
     if(S.isAdmin){
@@ -842,6 +887,7 @@ auth.onAuthStateChanged(async user => {
     g('shiftBtn').classList.add('hidden'); g('shiftBtn').classList.remove('flex');
     g('hwBtn').classList.add('hidden');
     g('ventasBtn')?.classList.add('hidden'); g('ventasBtn')?.classList.remove('flex');
+    g('btnNuevoProducto')?.classList.add('hidden'); g('btnNuevoProducto')?.classList.remove('flex');
     S.currentShift=null;
     tag.textContent='Consulta de Precios';
     tag.className='text-[10px] sm:text-xs bg-white/15 border border-white/20 px-2 py-0.5 rounded-full';
@@ -974,6 +1020,7 @@ function arrancarDatosDelNegocio(){
   try{ subscribeBranches(); }catch(e){ console.warn(e); }
   try{ subscribeCarriers(); }catch(e){ console.warn(e); }
   try{ if(typeof subscribePromos==='function') subscribePromos(); }catch(e){ console.warn(e); }
+  try{ subscribePermisos(); }catch(e){ console.warn(e); }
   try{ initTerminal(); }catch(e){ console.warn(e); }
   setTimeout(()=>{ try{ if(typeof reanudarCobroTerminal==='function') reanudarCobroTerminal(); }catch(e){ console.warn(e); } }, 0);
 }
@@ -1317,6 +1364,9 @@ function onSearchKey(e){
   if(e.key === 'Escape' && abierta){ dd.classList.add('hidden'); return; }
   if(e.key === 'Enter'){
     e.preventDefault();
+    /* ¿Fue el lector de códigos? Entonces lo atiende el lector (initHardwareScanner)
+       con el código limpio, no con lo que se haya acumulado en el buscador. */
+    if(typeof HW!=='undefined' && HW.buffer.length >= HW.MIN_LEN && Date.now() - HW.lastKeyTs < HW.MAX_GAP*2) return;
     if(abierta && S._ddIdx >= 0 && S._ddLista[S._ddIdx]){ selectFromDropdown(S._ddLista[S._ddIdx].barcode); return; }
     doSearch();
   }
@@ -1389,7 +1439,12 @@ async function doSearch(queryOverride){
     }catch(e){}
   }
 
-  if(!match){ showNotFound(raw); return; }
+  if(!match){
+    showNotFound(raw);
+    /* Un código (solo números o sin espacios y largo) no se deja en el buscador */
+    if(/^\S{6,}$/.test(raw) && g('searchInput').value.trim()===raw) g('searchInput').value='';
+    return;
+  }
   /* Celular en modo escáner: el código va a la computadora de la caja */
   if(window._phoneMode && window._targetTerminal && exacto && !S._yaEnviado){
     pushToTerminal(match.barcode, window._targetTerminal).then(()=>{
@@ -1519,7 +1574,7 @@ function showNotFound(code){
   });
   show('stateNotFound'); hide('stateProduct'); hide('stateWelcome'); hide('stateLoading');
   const btn = g('addFromScanBtn');
-  if(S.isAdmin){ btn.classList.remove('hidden'); window._pendingBarcode=code; }
+  if(puedeAltaProductos() && !window._phoneMode){ btn.classList.remove('hidden'); window._pendingBarcode=code; }
   else btn.classList.add('hidden');
 }
 
@@ -1588,8 +1643,10 @@ function addToCart(silencioso){
   }
   
   S.lastAdded = p.barcode;
+  const promosAplicadas = aplicarPromosAuto();   // ¿se juntó una promoción? (ej. 2 caguamas → 2x60)
   renderCart();
-  if(!silencioso && !modoVenta()) showToast(p.name+' agregado ✓','success');
+  avisarPromosAuto(promosAplicadas);
+  if(!silencioso && !modoVenta() && !promosAplicadas.length) showToast(p.name+' agregado ✓','success');
   beep('add');
   g('qtyInput').value = p.isBulk ? '' : 1;
   refreshProductStockUI();
@@ -1627,7 +1684,9 @@ function changeCartQty(b,d){
   }
   i.quantity = next;
   i.subtotal = i.price * i.quantity;
+  const promosAplicadas = d>0 ? aplicarPromosAuto() : [];
   renderCart();
+  avisarPromosAuto(promosAplicadas);
   refreshProductStockUI();
 }
 async function clearCart(){
@@ -1855,6 +1914,7 @@ function toggleNavMore(ev){
     html += `<div class="px-4 pt-2 pb-2.5"><p class="text-sm font-bold text-slate-800 truncate">${esc(nombre)}</p>`
          +  `<p class="text-[11px] text-slate-400 truncate">${esc(S.userBranchName||nombreNegocio()||'')}</p></div><div class="nm-sep"></div>`;
   }
+  if(vis('btnNuevoProducto')) html += item('fa-square-plus', 'Dar de alta un producto', 'showProductModal(false)');
   if(vis('ventasBtn')) html += item('fa-receipt', 'Ventas del turno · devoluciones', 'abrirVentasTurno()');
   if(vis('hwBtn'))   html += item('fa-print', S.printer.connected ? 'Impresora · conectada' : 'Impresora y hardware', 'openHardwareModal()');
   html += item(S.soundOn?'fa-volume-high':'fa-volume-xmark', S.soundOn?'Silenciar sonidos':'Activar sonidos', 'toggleSound()');
@@ -2051,9 +2111,10 @@ async function openScanModal(){
   await delay(150);
   startSc('scanReader','scanInst', async code => {
     await closeScanModal();
-    g('searchInput').value = code;
+    g('searchInput').value = '';
     /* En modo escáner, doSearch se encarga de mandarlo a la caja */
     await doSearch(code);
+    if(g('searchInput').value.trim()===code) g('searchInput').value = '';
   });
 }
 async function closeScanModal(){
@@ -2116,8 +2177,13 @@ function initHardwareScanner(){
         const code = HW.buffer;
         resetHwBuffer();
         flashHwBadge();
-        g('searchInput').value = code;
-        doSearch(code);
+        e.preventDefault();
+        /* El código escaneado NO se queda en el buscador: si quedara, el
+           siguiente escaneo se pegaría al anterior y «no existiría». */
+        const si = g('searchInput');
+        si.value = '';
+        g('searchDropdown')?.classList.add('hidden');
+        Promise.resolve(doSearch(code)).finally(()=>{ if(si.value.trim()===code) si.value=''; });
         if(navigator.vibrate) navigator.vibrate(30);
       }
       return;
@@ -3907,7 +3973,7 @@ function switchTab(tab){
   if(tab==='products') loadProducts();
   if(tab==='inventory') initInventoryTab();
   if(tab==='expenses') loadExpenses();
-  if(tab==='sellers') loadSellers();
+  if(tab==='sellers'){ loadSellers(); pintarPermisosUI(); }
   if(tab==='history') loadHistory();
   if(tab==='shifts') loadShiftsAdmin();
   if(tab==='hardware') updatePrinterUI();
@@ -4245,7 +4311,7 @@ function filterProdTable(){
   });
   tbody.innerHTML=list.slice(desde, desde+PAGE_SIZE).map(p=>`<tr class="hover:bg-slate-50 transition">
     <td class="px-3 sm:px-4 py-3 m-hide"><code class="text-xs bg-slate-100 px-1.5 py-0.5 rounded text-slate-600">${esc(p.barcode)}</code></td>
-    <td class="r1c1 rspan px-3 sm:px-4 py-3 font-semibold text-slate-800 text-sm max-w-[180px] break-anywhere">${p.favorite?'<i class="fa-solid fa-star text-amber-400 text-[10px] mr-1"></i>':''}${esc(p.name)}${expiryChip(p)}${(p.marca||p.contenido)?`<span class="block text-[10px] font-normal text-slate-400">${esc([p.marca,p.contenido].filter(Boolean).join(' · '))}</span>`:''}
+    <td class="r1c1 rspan px-3 sm:px-4 py-3 font-semibold text-slate-800 text-sm max-w-[180px] break-anywhere">${p.favorite?'<i class="fa-solid fa-star text-amber-400 text-[10px] mr-1"></i>':''}${esc(p.name)}${expiryChip(p)}${(p.marca||p.contenido)?`<span class="block text-[10px] font-normal text-slate-400">${esc([p.marca,p.contenido].filter(Boolean).join(' · '))}</span>`:''}${p.altaPor==='seller'?`<span class="block text-[10px] font-semibold text-amber-600"><i class="fa-solid fa-user-tag mr-0.5"></i>Alta por ${esc(p.createdByName||'un vendedor')} · revisa precio</span>`:''}
       <span class="rc-flex sm:hidden flex flex-wrap items-center gap-1.5 mt-1.5 font-normal"><code class="text-[10px] bg-slate-100 px-1.5 py-0.5 rounded text-slate-500">${esc(p.barcode)}</code>${stockBadge(p)}${p.active===false?'<span class="text-[10px] px-2 py-0.5 rounded-full bg-red-100 text-red-600 font-medium">Inactivo</span>':''}</span></td>
     <td class="r1c2 px-3 sm:px-4 py-3 text-right font-bold text-indigo-700 text-base sm:text-sm whitespace-nowrap num">${fmt(p.price)}</td>
     <td class="px-3 sm:px-4 py-3 text-right text-xs text-slate-500 hidden lg:table-cell whitespace-nowrap num">${p.cost?fmt(p.cost):'<span class="text-slate-300">—</span>'}</td>
@@ -4413,6 +4479,8 @@ function addFromCatalog(code){
 }
 
 function showProductModal(fromScan=false){
+  if(!puedeAltaProductos()){ showToast('El dueño no permite que los vendedores den de alta productos','warning'); return; }
+  S._altaDesdeVenta = !!fromScan && modoVenta();   // al guardarlo se agrega a la venta
   refreshCategoryList();
   g('productModalTitle').textContent='Agregar Producto';
   g('pf_barcode').value=fromScan&&window._pendingBarcode?window._pendingBarcode:'';
@@ -4426,6 +4494,7 @@ function showProductModal(fromScan=false){
   if(g('pf_barcode').value.trim()) autollenarNombreDesdeCatalogo();
 }
 function editProduct(barcode){
+  if(!S.isAdmin){ showToast('Solo el dueño puede editar productos','warning'); return; }
   const p=S.products.find(x=>x.barcode===barcode); if(!p) return;
   refreshCategoryList();
   g('productModalTitle').textContent='Editar Producto';
@@ -4454,6 +4523,8 @@ async function saveProduct(){
   if(!name){showToast('El nombre es requerido','error');return;}
   if(isNaN(price)||price<0){showToast('El precio no es válido','error');return;}
   
+  /* Vendedor: solo altas nuevas */
+  if(!S.isAdmin && (S.editingBarcode || !puedeAltaProductos())){ showToast('Solo el dueño puede editar productos','error'); return; }
   /* Editando y dejaron el código vacío: se queda el que tenía */
   if(!barcode && S.editingBarcode) barcode = S.editingBarcode;
   // Si no tiene código de barras, generamos uno corto interno (Ej: GR-4521)
@@ -4491,13 +4562,82 @@ async function saveProduct(){
     await cambiarCodigoProducto(S.editingBarcode, barcode, data);
     return;
   }
+  /* ── Alta nueva: nunca pisar un producto que ya existe ── */
+  if(!S.editingBarcode){
+    const ya = S.productsRaw.find(p=>p.barcode===barcode);
+    if(ya){
+      if(S.isAdmin){
+        const ok = await confirmAction({title:'Ese código ya existe', msg:`«${barcode}» ya es «${ya.name}».\n¿Quieres abrirlo para editarlo?`, okLabel:'Editar', icon:'📦'});
+        if(ok){ hideProductModal(); editProduct(barcode); }
+      } else showToast(`Ese código ya es de «${ya.name}». Búscalo en la caja; si el precio está mal, avísale al dueño.`,'warning');
+      beep('error'); return;
+    }
+    data.createdAt = FS.FieldValue.serverTimestamp();
+    data.createdBy = S.user?.uid || null;
+    data.createdByName = nombreCajeroActual();
+    data.altaPor = S.isAdmin ? 'owner' : 'seller';
+  }
+  const btnG = g('pf_saveBtn'); if(btnG) btnG.disabled = true;
   try{
-    if(!S.editingBarcode) data.createdAt=FS.FieldValue.serverTimestamp(); 
-    await db.collection('products').doc(barcode).set(data,{merge:true});
-    hideProductModal(); loadProducts();
-    showToast('Producto '+(S.editingBarcode?'actualizado':'agregado')+' ✅','success');
-  }catch(e){console.error(e);showToast('Error: '+e.message,'error');}
+    const ref = db.collection('products').doc(barcode);
+    if(S.editingBarcode){
+      await ref.set(data,{merge:true});
+    } else if(isOnline()){
+      /* En una transacción: si otra caja lo dio de alta un segundo antes, no se pisa */
+      await withTimeout(dbRoot.runTransaction(async tx=>{
+        const snap = await tx.get(ref);
+        if(snap.exists) throw Object.assign(new Error(`Ese código ya es de «${snap.data().name}»`), {code:'existe'});
+        tx.set(ref, data);
+      }), 15000);
+    } else {
+      await withTimeout(ref.set(data), 8000).catch(e=>{ if(e.message!=='timeout') throw e; });   // sin internet: se sube al volver
+    }
+    const nuevo = !S.editingBarcode;
+    hideProductModal();
+    if(S.isAdmin) loadProducts();
+    showToast('Producto '+(nuevo?'agregado':'actualizado')+' ✅','success');
+    /* Lo dio de alta desde «Producto no encontrado» en plena venta: entra a la venta */
+    if(nuevo && S._altaDesdeVenta && !isBulk){
+      agregarEscaneado({barcode, ...data, createdAt:null, updatedAt:null});
+    }
+    S._altaDesdeVenta = false;
+  }catch(e){
+    console.error(e);
+    showToast(e.code==='existe' ? e.message+'. No se guardó.' : 'Error: '+e.message,'error');
+  }finally{ if(btnG) btnG.disabled = false; }
 }
+/* ════════════════════════════════════
+   PERMISOS DE LOS VENDEDORES  (negocios/{TENANT}/config/permisos)
+   altaProductos: los vendedores pueden dar de alta productos NUEVOS
+   (no pueden editar, cambiar precio ni borrar los que ya existen).
+   Viene encendido; el dueño lo apaga en Admin → Vendedores.
+════════════════════════════════════ */
+function subscribePermisos(){
+  if(S.permisosUnsub || !TENANT) return;
+  S.permisosUnsub = db.collection('config').doc('permisos').onSnapshot(snap=>{
+    S.permisos = snap.exists ? (snap.data()||{}) : {};
+    pintarPermisosUI();
+  }, err=>{ console.warn('Permisos:', err.code||err.message); S.permisosUnsub = null; });
+}
+function puedeAltaProductos(){
+  if(S.isAdmin) return true;
+  return !!S.isSeller && S.permisos.altaProductos !== false;
+}
+function pintarPermisosUI(){
+  const on = puedeAltaProductos() && !window._phoneMode && !window._displayMode;
+  const b = g('btnNuevoProducto');
+  if(b){ b.classList.toggle('hidden', !on); b.classList.toggle('flex', on); }
+  const chk = g('perm_altaProductos');
+  if(chk) chk.checked = S.permisos.altaProductos !== false;
+}
+async function guardarPermisoAlta(el){
+  if(!S.isAdmin){ el.checked = !el.checked; return; }
+  try{
+    await db.collection('config').doc('permisos').set({altaProductos: !!el.checked, updatedAt: FS.FieldValue.serverTimestamp()}, {merge:true});
+    showToast(el.checked ? 'Los vendedores ya pueden dar de alta productos' : 'Solo tú puedes dar de alta productos','success');
+  }catch(e){ el.checked = !el.checked; showToast('No se pudo guardar: '+e.message,'error'); }
+}
+
 /* ── Cambiar el código de barras de un producto ──
    En Firestore el código ES el nombre del documento, así que no se puede
    "renombrar": se copia todo (stock, lotes, ventas, costo…) a un documento
@@ -4702,12 +4842,21 @@ async function loadHistory(){
     tbody.innerHTML=sales.map(s=>{
       const d=s.timestamp?.toDate?.();
       const ds=d?d.toLocaleString('es-MX',{day:'2-digit',month:'short',hour:'2-digit',minute:'2-digit'}):'-';
-      const methodLabel = s.payMethod==='cash'?'💵 Efectivo':s.payMethod==='card'?'💳 Tarjeta':'🔀 Mixto';
-      const methodCls = s.payMethod==='cash'?'bg-emerald-100 text-emerald-700':s.payMethod==='card'?'bg-blue-100 text-blue-700':'bg-violet-100 text-violet-700';
-      return`<tr class="hover:bg-slate-50 transition ${s.voided?'opacity-50':''}">
-        <td class="px-3 sm:px-4 py-3 text-xs text-slate-600 whitespace-nowrap">${ds}${s.voided?' <span class="badge-low text-[10px] px-1.5 py-0.5 rounded-full ml-1">Anulada</span>':''}</td>
+      /* Devolución (sale dinero) = rojo · Cambio = naranja · Venta con algo devuelto = aviso */
+      const esDev = !!s.devolucion && !(s.items||[]).some(i=>!i.isCredit);
+      const esCambio = !!s.devolucion && !esDev;
+      const conDev = !s.devolucion && (s.montoDevuelto||0) > 0;
+      const methodLabel = esDev ? '↩️ Devolución' : s.payMethod==='cash'?'💵 Efectivo':s.payMethod==='card'?'💳 Tarjeta':'🔀 Mixto';
+      const methodCls = esDev ? 'bg-red-100 text-red-700' : s.payMethod==='cash'?'bg-emerald-100 text-emerald-700':s.payMethod==='card'?'bg-blue-100 text-blue-700':'bg-violet-100 text-violet-700';
+      const etiqueta = esDev ? ' <span class="text-[10px] font-bold px-1.5 py-0.5 rounded-full ml-1 bg-red-600 text-white">DEVOLUCIÓN</span>'
+                     : esCambio ? ' <span class="text-[10px] font-bold px-1.5 py-0.5 rounded-full ml-1 bg-orange-500 text-white">CAMBIO</span>'
+                     : conDev ? ` <span class="text-[10px] font-semibold px-1.5 py-0.5 rounded-full ml-1 bg-red-50 text-red-600 border border-red-200">Devuelto ${fmt(s.montoDevuelto)}</span>` : '';
+      const fila = esDev ? 'bg-red-50 hover:bg-red-100 border-l-4 border-red-500' : esCambio ? 'bg-orange-50/60 hover:bg-orange-50 border-l-4 border-orange-400' : 'hover:bg-slate-50';
+      const totalCls = (s.total||0) < 0 ? 'text-red-600' : esCambio ? 'text-orange-600' : 'text-indigo-700';
+      return`<tr class="${fila} transition ${s.voided?'opacity-50':''}">
+        <td class="px-3 sm:px-4 py-3 text-xs text-slate-600 whitespace-nowrap">${ds}${s.voided?' <span class="badge-low text-[10px] px-1.5 py-0.5 rounded-full ml-1">Anulada</span>':''}${etiqueta}</td>
         <td class="px-3 sm:px-4 py-3 text-xs sm:text-sm text-slate-800 hidden sm:table-cell">${esc(s.sellerName||'–')}</td>
-        <td class="px-3 sm:px-4 py-3 text-right font-bold text-indigo-700 text-xs sm:text-sm ${s.voided?'line-through':''}">${fmt(s.total)}</td>
+        <td class="px-3 sm:px-4 py-3 text-right font-bold ${totalCls} text-xs sm:text-sm ${s.voided?'line-through':''}">${fmt(s.total)}</td>
         <td class="px-3 sm:px-4 py-3 text-center hidden md:table-cell">
           <span class="text-xs px-2 py-0.5 rounded-full ${methodCls}">${methodLabel}</span>
         </td>
@@ -4799,7 +4948,7 @@ function exportCSV(){
   if(!S.histSales.length){showToast('Carga el historial primero','warning');return;}
   const h=['ID','Fecha','Vendedor','Subtotal','Descuento','Total','Método','Estado','Items'];
   const methodName = m => m==='cash'?'Efectivo':m==='card'?'Tarjeta':'Mixto';
-  const rows=S.histSales.map(s=>[s.id,s.timestamp?.toDate?.()?.toLocaleString('es-MX')||'',s.sellerName||'',s.subtotal??s.total??0,s.discountAmt||0,s.total||0,methodName(s.payMethod),s.voided?'Anulada':'Válida',(s.items||[]).map(i=>`${i.name}(x${i.quantity})`).join('; ')]);
+  const rows=S.histSales.map(s=>[s.id,s.timestamp?.toDate?.()?.toLocaleString('es-MX')||'',s.sellerName||'',s.subtotal??s.total??0,s.discountAmt||0,s.total||0,methodName(s.payMethod),s.voided?'Anulada':s.devolucion?((s.items||[]).some(i=>!i.isCredit)?'Cambio':'Devolución'):'Válida',(s.items||[]).map(i=>`${i.name}(x${i.quantity})`).join('; ')]);
   const csv=[h,...rows].map(r=>r.map(v=>`"${String(v).replace(/"/g,'""')}"`).join(',')).join('\n');
   const a=document.createElement('a'); a.href=URL.createObjectURL(new Blob(['\uFEFF'+csv],{type:'text/csv;charset=utf-8'}));
   a.download='ventas_'+new Date().toISOString().split('T')[0]+'.csv'; a.click();

@@ -101,6 +101,7 @@ function abrirPromo(id){
   g('pm_code').value  = pr ? (pr.code||'') : '';
   g('pm_price').value = pr ? (pr.price ?? '') : '';
   g('pm_active').checked = pr ? pr.active !== false : true;
+  if(g('pm_auto')) g('pm_auto').checked = pr ? pr.auto !== false : true;
   g('pm_buscar').value = '';
   g('pm_resultados').classList.add('hidden');
   g('pm_err').classList.add('hidden');
@@ -215,6 +216,7 @@ async function guardarPromo(){
   if((S.promos||[]).some(p=>p.id!==PM.id && sinAcentos(p.code||'')===cn)) return err(`Ya hay otra promoción con el código «${code}».`);
 
   const data = { name, code, price, items, active: !!g('pm_active').checked,
+                 auto: g('pm_auto') ? !!g('pm_auto').checked : true,
                  updatedAt: FS.FieldValue.serverTimestamp() };
   const btn = g('pm_btn'); btn.disabled = true;
   try{
