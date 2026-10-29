@@ -58,9 +58,22 @@ function detalleCatalogo(f){
 
 /* Variantes del código: los lectores a veces quitan o agregan el 0
    inicial (UPC-A de 12 dígitos vs EAN-13 de 13). */
+/* Firestore no acepta «/» en el nombre de un documento (lo toma como carpeta),
+   ni «.» / «..» ni «__algo__». El código del producto ES el nombre del documento,
+   así que «PROMO TECATE / INDIO» se guarda como «PROMO TECATE - INDIO».
+   Los códigos de barras escaneados nunca traen «/»: solo afecta códigos escritos a mano. */
+function codigoSeguro(code){
+  let c = String(code ?? '').trim().replace(/\//g, '-').replace(/\s+/g, ' ');
+  if(c === '.' || c === '..') c = c.replace(/\./g, '-');
+  if(/^__.*__$/.test(c)) c = '_' + c.slice(2);
+  return c.slice(0, 200);
+}
+
 function variantesCodigo(code){
   const c = String(code||'').trim();
   const v = [c];
+  const seguro = codigoSeguro(c);
+  if(seguro && seguro !== c) v.push(seguro);   // escribieron el código con «/»
   if(/^\d+$/.test(c)){
     if(c.length===12) v.push('0'+c);
     if(c.length===13 && c.startsWith('0')) v.push(c.slice(1));
@@ -135,7 +148,8 @@ const COLS_DEL_NEGOCIO = new Set([
   'products','sales','users','shifts','expenses',
   'terminals','branches','rechargeCarriers','inventoryEntries',
   'customers','counters','contratos','accessRequests',
-  'aperturasCajon'   // bitácora: quién abrió el cajón sin venta y cuándo
+  'aperturasCajon',  // bitácora: quién abrió el cajón sin venta y cuándo
+  'promos'           // promociones / paquetes (ej. caguamas 2x60)
 ]);
 
 const db = {
@@ -182,6 +196,7 @@ const S = {
   userBranchId:null, userBranchName:null,
   editingBranchId:null, reassignSellerUid:null,
   rechargeCarriers:[], carrierUnsub:null, editingCarrierId:null,
+  promos:[], promoUnsub:null,   // promociones (ver promos.js)
   rechargeSel:{carrierId:null, carrierName:'', commissionPct:0, amount:0},
   /* ── Inventario / gastos / offline ── */
   entryProduct:null, entries:[], expenses:[], editingExpenseId:null,
@@ -270,29 +285,127 @@ function rebuildProducts(){
   refreshCategoryList();
   updateStockBell();
   if(S.curProduct){
-    const fresh = S.products.find(x=>x.barcode===S.curProduct.barcode);
-    if(fresh){ S.curProduct = fresh; refreshProductStockUI(); }
+    if(S.curProduct.isPromo) refreshProductStockUI();
+    else {
+      const fresh = S.products.find(x=>x.barcode===S.curProduct.barcode);
+      if(fresh){ S.curProduct = fresh; refreshProductStockUI(); }
+    }
   }
   if(g('admin-products') && !g('admin-products').classList.contains('hidden')) filterProdTable();
 }
 
-/* null = el producto no lleva control de inventario (se puede vender siempre) */
-function stockOf(p){ return (p && typeof p.stock==='number' && isFinite(p.stock)) ? p.stock : null; }
+/* null = el producto no lleva control de inventario (se puede vender siempre).
+   Promoción: cuántas promos alcanzan con el stock de sus productos. */
+function stockOf(p){
+  if(p && p.isPromo) return promoStock(p);
+  return (p && typeof p.stock==='number' && isFinite(p.stock)) ? p.stock : null;
+}
+/* Cuánto de un producto ya está apartado en el carrito: lo que se vende
+   suelto + lo que va dentro de las promociones (2x60 = 2 caguamas). */
 function qtyInCart(barcode){
-  return round3(S.cart.filter(i=>i.barcode===barcode && !i.isRecharge).reduce((s,i)=>s+(i.quantity||0),0));
+  let n = 0;
+  S.cart.forEach(i=>{
+    if(i.isRecharge) return;
+    if(i.barcode===barcode) n += Number(i.quantity)||0;
+    if(i.isPromo) (i.items||[]).forEach(c=>{ if(c.barcode===barcode) n += (Number(c.qty)||0)*(Number(i.quantity)||0); });
+  });
+  return round3(n);
 }
 /* Cuánto más se puede agregar al carrito (Infinity si no hay control) */
 function availableToAdd(p){
+  if(p && p.isPromo) return promoLibre(p);
   const st = stockOf(p);
   return st===null ? Infinity : round3(Math.max(0, st - qtyInCart(p.barcode)));
 }
-const qtyLabel = (p, n) => p && p.isBulk ? `${round3(n)} kg` : `${round3(n)} pza${round3(n)===1?'':'s'}`;
+const qtyLabel = (p, n) => p && p.isBulk ? `${round3(n)} kg`
+  : p && p.isPromo ? `${round3(n)} promo${round3(n)===1?'':'s'}`
+  : `${round3(n)} pza${round3(n)===1?'':'s'}`;
+
+/* ════════════════════════════════════
+   PROMOCIONES (paquetes) — lo que usa la caja
+   Una promo es un precio especial para varios productos juntos:
+     «Caguamas 2x60» = 2 × Caguama Tecate por $60.
+   En el carrito es UN renglón, pero al cobrar se descuenta del
+   inventario cada producto que trae (2 caguamas). Las promos se
+   crean en Admin → Promociones (promos.js).
+════════════════════════════════════ */
+const PROMO_PREFIJO = 'PROMO:';
+function promoComoProducto(pr){
+  return {
+    barcode: PROMO_PREFIJO + pr.id, isPromo:true, promoId: pr.id,
+    code: pr.code || '', name: pr.name || 'Promoción', price: Number(pr.price)||0,
+    category: 'Promoción', active: pr.active !== false,
+    items: (pr.items||[]).map(c=>({barcode:String(c.barcode||''), name:c.name||'', qty:Number(c.qty)||0}))
+                         .filter(c=>c.barcode && c.qty>0)
+  };
+}
+/* Las promos que se pueden vender hoy */
+function promosActivas(){
+  return (S.promos||[]).filter(p=>p.active!==false).map(promoComoProducto).filter(p=>p.items.length && p.price>0);
+}
+/* Busca por código de la promo o por su clave interna PROMO:id */
+function promoPorCodigo(code){
+  const c = sinAcentos(String(code||'').trim());
+  if(!c) return null;
+  return promosActivas().find(p => sinAcentos(p.barcode)===c || (p.code && sinAcentos(p.code)===c)) || null;
+}
+/* Promos alcanzables con el stock (sin contar el carrito). null = ningún producto lleva control */
+function promoStock(pr){
+  let max = null;
+  for(const c of pr.items||[]){
+    const p = S.products.find(x=>x.barcode===c.barcode);
+    if(!p || p.active===false) return 0;          // un producto de la promo ya no existe
+    const st = stockOf(p); if(st===null) continue;
+    const n = Math.floor((Math.max(0, st) + 1e-9) / c.qty);
+    max = max===null ? n : Math.min(max, n);
+  }
+  return max;
+}
+/* Cuántas promos más caben, descontando lo que ya está en el carrito */
+function promoLibre(pr){
+  let max = Infinity;
+  for(const c of pr.items||[]){
+    const p = S.products.find(x=>x.barcode===c.barcode);
+    if(!p || p.active===false) return 0;
+    const st = stockOf(p); if(st===null) continue;
+    max = Math.min(max, Math.floor((Math.max(0, st - qtyInCart(c.barcode)) + 1e-9) / c.qty));
+  }
+  return max;
+}
+/* Costo de la promo = costo de los productos que trae (para la ganancia real) */
+function costoPromo(pr){
+  return (pr.items||[]).reduce((s,c)=>{
+    const p = S.products.find(x=>x.barcode===c.barcode);
+    return s + (Number(p?.cost)||0) * c.qty;
+  }, 0);
+}
+/* Texto corto de lo que incluye: «2 Caguama Tecate + 1 Hielo» */
+function contenidoPromo(pr){
+  return (pr.items||[]).map(c=>{
+    const p = S.products.find(x=>x.barcode===c.barcode);
+    return `${round3(c.qty)}${p?.isBulk?' kg':''} ${c.name || p?.name || c.barcode}`;
+  }).join(' + ');
+}
+/* Movimientos de inventario de una venta: las promos se desarman en sus productos.
+   Devuelve [{barcode, qty}] sumando lo repetido (suelto + dentro de promos). */
+function deltasDeItems(items){
+  const m = {};
+  (items||[]).forEach(i=>{
+    if(!i || i.isRecharge) return;
+    if(i.isPromo){
+      (i.items||[]).forEach(c=>{ if(c.barcode) m[c.barcode] = round3((m[c.barcode]||0) + (Number(c.qty)||0)*(Number(i.quantity)||0)); });
+      return;
+    }
+    if(i.barcode) m[i.barcode] = round3((m[i.barcode]||0) + (Number(i.quantity)||0));
+  });
+  return Object.entries(m).filter(([,q])=>q>0).map(([barcode,qty])=>({barcode, qty}));
+}
 
 /* Revisa el carrito completo contra el stock actual.
    Devuelve la lista de productos que ya no alcanzan. */
 function cartStockProblems(){
   const need = {};
-  S.cart.forEach(i=>{ if(!i.isRecharge) need[i.barcode] = round3((need[i.barcode]||0) + i.quantity); });
+  deltasDeItems(S.cart).forEach(d=>{ need[d.barcode] = d.qty; });   // las promos cuentan sus productos
   const problems = [];
   Object.entries(need).forEach(([barcode, qty])=>{
     const p = S.products.find(x=>x.barcode===barcode);
@@ -305,14 +418,25 @@ function cartStockProblems(){
 
 /* Ajusta el carrito a lo que realmente hay (quita agotados, recorta cantidades) */
 function fitCartToStock(){
-  cartStockProblems().forEach(pr=>{
-    const item = S.cart.find(i=>i.barcode===pr.barcode && !i.isRecharge);
-    if(!item) return;
-    if(pr.stock<=0){ S.cart = S.cart.filter(i=>i!==item); return; }
-    item.quantity = item.isBulk ? round3(pr.stock) : Math.floor(pr.stock);
-    if(item.quantity<=0){ S.cart = S.cart.filter(i=>i!==item); return; }
-    item.subtotal = item.price * item.quantity;
-  });
+  /* Primero se recorta lo que va suelto; si no alcanza, se quitan promos de una en una */
+  for(let vuelta=0; vuelta<1000; vuelta++){
+    const pr = cartStockProblems()[0];
+    if(!pr) break;
+    let item = S.cart.find(i=>i.barcode===pr.barcode && !i.isRecharge && !i.isPromo);
+    if(item){
+      const enPromos = round3(pr.qty - item.quantity);           // lo que usan las promos del carrito
+      const cabe = round3(pr.stock - enPromos);
+      item.quantity = cabe<=0 ? 0 : (item.isBulk ? round3(cabe) : Math.floor(cabe + 1e-9));
+      if(item.quantity<=0) S.cart = S.cart.filter(i=>i!==item);
+      else item.subtotal = item.price * item.quantity;
+      continue;
+    }
+    item = S.cart.find(i=>i.isPromo && (i.items||[]).some(c=>c.barcode===pr.barcode));
+    if(!item) break;
+    item.quantity -= 1;
+    if(item.quantity<=0) S.cart = S.cart.filter(i=>i!==item);
+    else item.subtotal = item.price * item.quantity;
+  }
   renderCart();
 }
 
@@ -824,6 +948,7 @@ function arrancarDatosDelNegocio(){
   try{ subscribeProducts(); }catch(e){ console.warn(e); }
   try{ subscribeBranches(); }catch(e){ console.warn(e); }
   try{ subscribeCarriers(); }catch(e){ console.warn(e); }
+  try{ if(typeof subscribePromos==='function') subscribePromos(); }catch(e){ console.warn(e); }
   try{ initTerminal(); }catch(e){ console.warn(e); }
   setTimeout(()=>{ try{ if(typeof reanudarCobroTerminal==='function') reanudarCobroTerminal(); }catch(e){ console.warn(e); } }, 0);
 }
@@ -1081,11 +1206,18 @@ function handleSearchInput(q) {
   const dd = g('searchDropdown');
   if(!q) { dd.classList.add('hidden'); return; }
   q = sinAcentos(q);
-  const matches = S.products.filter(p => p.active !== false && (sinAcentos(p.name).includes(q) || sinAcentos(p.barcode).includes(q))).slice(0, 8);
+  /* Promociones primero (máx. 4), luego productos */
+  const promos = promosActivas().filter(p => sinAcentos(p.name).includes(q) || sinAcentos(p.code).includes(q)
+                                         || (q.length>=3 && sinAcentos(contenidoPromo(p)).includes(q))).slice(0, 4);
+  const prods = S.products.filter(p => p.active !== false && (sinAcentos(p.name).includes(q) || sinAcentos(p.barcode).includes(q)));
+  const matches = [...promos, ...prods].slice(0, 8);
   if(!matches.length) { dd.classList.add('hidden'); return; }
   dd.innerHTML = matches.map(p => `
-    <div onclick="selectFromDropdown('${esc(p.barcode)}')" class="p-3 hover:bg-slate-50 cursor-pointer flex justify-between items-center transition">
-      <div class="min-w-0 flex-1"><p class="text-sm font-semibold text-slate-800 truncate">${esc(p.name)}</p><p class="text-[10px] text-slate-400">${esc(p.barcode)}</p></div>
+    <div onclick="selectFromDropdown('${esc(p.barcode)}')" class="p-3 ${p.isPromo?'bg-amber-50/60 hover:bg-amber-50':'hover:bg-slate-50'} cursor-pointer flex justify-between items-center transition">
+      <div class="min-w-0 flex-1">
+        <p class="text-sm font-semibold text-slate-800 truncate">${p.isPromo?'<span class="inline-block bg-amber-400 text-white text-[9px] font-black px-1.5 py-0.5 rounded mr-1 align-middle">PROMO</span>':''}${esc(p.name)}</p>
+        <p class="text-[10px] text-slate-400 truncate">${p.isPromo ? esc(contenidoPromo(p)) + (p.code?' · '+esc(p.code):'') : esc(p.barcode)}</p>
+      </div>
       <div class="text-right shrink-0 ml-2">
         <span class="text-sm font-black text-indigo-600 block">${fmt(p.price)}</span>
         ${stockOf(p)!==null && stockOf(p)<=0 ? '<span class="text-[10px] font-bold text-red-500">Agotado</span>' : ''}
@@ -1095,7 +1227,11 @@ function handleSearchInput(q) {
 }
 function selectFromDropdown(barcode) {
   g('searchDropdown').classList.add('hidden');
-  g('searchInput').value = barcode; doSearch(barcode);
+  const promo = String(barcode).startsWith(PROMO_PREFIJO) ? promoPorCodigo(barcode) : null;
+  g('searchInput').value = promo ? promo.name : barcode;
+  /* Elegida de la lista = el cajero ya la escogió: entra directo a la venta */
+  if(promo && modoVenta()){ agregarEscaneado(promo); return; }
+  doSearch(barcode);
 }
 document.addEventListener('click', e => { if(!e.target.closest('#searchWrapper')) g('searchDropdown')?.classList.add('hidden'); });
 async function doSearch(queryOverride){
@@ -1124,6 +1260,12 @@ async function doSearch(queryOverride){
   let match = S.products.find(p => variantes.includes(p.barcode) && p.active !== false);
   let exacto = !!match;   // código exacto = se agrega solo a la venta
 
+  /* 1b. Código exacto de una promoción (o su clave PROMO:id) */
+  if(!match){
+    match = promoPorCodigo(raw);
+    exacto = !!match;
+  }
+
   /* 2. Barcode partial / name includes (sin importar mayúsculas ni acentos) */
   if(!match){
     const qn = sinAcentos(q);
@@ -1132,11 +1274,16 @@ async function doSearch(queryOverride){
       sinAcentos(p.name).includes(qn)
     ));
   }
+  /* 2b. Nombre de una promoción */
+  if(!match){
+    const qn = sinAcentos(q);
+    match = promosActivas().find(p => sinAcentos(p.name).includes(qn)) || null;
+  }
 
   /* 3. If still not found, try direct Firestore lookup (catches barcode not yet in cache) */
   if(!match){
     try{
-      const doc = await db.collection('products').doc(raw).get();
+      const doc = await db.collection('products').doc(codigoSeguro(raw)).get();
       if(doc.exists && doc.data().active !== false){
         match = {barcode:doc.id,...doc.data()};
         exacto = true;
@@ -1195,9 +1342,9 @@ function setBulkUnit(unit) {
 
 function showProduct(p){
   S.curProduct = p;
-  g('pdBarcode').textContent = 'Cód: '+p.barcode;
+  g('pdBarcode').textContent = p.isPromo ? '🏷️ Promoción' + (p.code ? ' · ' + p.code : '') : 'Cód: '+p.barcode;
   g('pdName').textContent = p.name;
-  g('pdCategory').textContent = p.category||'Sin categoría';
+  g('pdCategory').textContent = p.isPromo ? 'Incluye: ' + contenidoPromo(p) : (p.category||'Sin categoría');
   
   const qtyInp = g('qtyInput');
   if(p.isBulk) {
@@ -1311,7 +1458,9 @@ function addToCart(silencioso){
   if(st!==null){
     const libre = availableToAdd(p);
     if(st<=0){
-      showToast(`${p.name} está agotado. Registra una entrada de inventario para poder venderlo.`,'error');
+      showToast(p.isPromo
+        ? `No alcanzan las existencias para la promoción ${p.name} (${contenidoPromo(p)}).`
+        : `${p.name} está agotado. Registra una entrada de inventario para poder venderlo.`,'error');
       beep('error'); refreshProductStockUI(); return;
     }
     if(qty > libre + 1e-9){
@@ -1330,10 +1479,13 @@ function addToCart(silencioso){
       barcode: p.barcode, 
       name: p.name, 
       price: p.price, 
-      cost: Number(p.cost)||0, 
+      cost: p.isPromo ? costoPromo(p) : (Number(p.cost)||0), 
       quantity: qty, 
       subtotal: p.price * qty, 
-      isBulk: p.isBulk
+      isBulk: p.isBulk,
+      /* Promoción: lo que trae, para descontar cada producto del inventario */
+      ...(p.isPromo ? { isPromo:true, promoId:p.promoId, promoCode:p.code||'',
+                        items: p.items.map(c=>({barcode:c.barcode, name:c.name, qty:c.qty})) } : {})
     });
   }
   
@@ -1358,11 +1510,19 @@ function changeCartQty(b,d){
   if(i.isRecharge) return;
   const min = i.isBulk ? 0.001 : 1;
   const next = round3(Math.max(min, i.quantity + d));
-  if(d>0){
+  if(d>0 && i.isPromo){
+    if(promoLibre(i) < 1){
+      showToast(`No alcanzan las existencias para otra promoción ${i.name}`,'error');
+      beep('error');
+      return;
+    }
+  } else if(d>0){
     const p = S.products.find(x=>x.barcode===b);
     const st = stockOf(p);
-    if(st!==null && next > st + 1e-9){
-      showToast(st<=0 ? `${i.name} está agotado` : `Solo hay ${qtyLabel(p, st)} de ${i.name}`,'error');
+    const enPromos = round3(qtyInCart(b) - i.quantity);   // lo que ya usan las promos del carrito
+    if(st!==null && next + enPromos > st + 1e-9){
+      const libre = Math.max(0, round3(st - enPromos));
+      showToast(st<=0 ? `${i.name} está agotado` : `Solo hay ${qtyLabel(p, libre)} de ${i.name}` + (enPromos>0?' (el resto va en promociones)':''),'error');
       beep('error');
       return;
     }
@@ -1434,9 +1594,11 @@ function ticketRowHTML(it){
        </div>`;
   return `<div class="tk-row grid grid-cols-[minmax(0,1fr)_auto] lg:grid-cols-[minmax(0,1fr)_132px_92px_108px_44px] items-center gap-x-3 gap-y-1.5 px-3 lg:px-4 py-2.5 border-b border-slate-100" data-bc="${bc}">
     <div class="min-w-0">
-      <p class="text-[15px] lg:text-sm font-semibold text-slate-800 leading-snug break-anywhere">${esc(it.name)}</p>
+      <p class="text-[15px] lg:text-sm font-semibold text-slate-800 leading-snug break-anywhere">${it.isPromo?'<span class="inline-block bg-amber-400 text-white text-[9px] font-black px-1.5 py-0.5 rounded mr-1 align-middle">PROMO</span>':''}${esc(it.name)}</p>
       <p class="text-xs text-slate-400 mt-0.5 lg:hidden num">${fmt(it.price)}${it.isBulk?' / kg':' c/u'}</p>
-      <p class="text-[11px] text-slate-400 mt-0.5 hidden lg:block font-mono truncate">${it.isRecharge?'Recarga':bc}</p>
+      ${it.isPromo
+        ? `<p class="text-[11px] text-amber-700 mt-0.5 truncate">${esc(contenidoPromo(it))}</p>`
+        : `<p class="text-[11px] text-slate-400 mt-0.5 hidden lg:block font-mono truncate">${it.isRecharge?'Recarga':bc}</p>`}
     </div>
     <button onclick="removeCartItem('${bc}')" aria-label="Quitar" class="lg:order-last justify-self-end w-9 h-9 rounded-lg text-slate-300 hover:text-red-500 hover:bg-red-50 active:bg-red-100 flex items-center justify-center"><i class="fa-solid fa-xmark"></i></button>
     ${stepper}
@@ -1450,7 +1612,7 @@ const TICKET_EMPTY = `<div class="h-full min-h-[220px] flex flex-col items-cente
   <p class="text-sm text-slate-400 mt-1 max-w-xs">Se agrega solo a la venta. También puedes escribir el nombre en el buscador.</p>
   <p class="hidden lg:flex flex-wrap justify-center gap-x-3 gap-y-1 mt-5 text-xs text-slate-400">
     <span><kbd class="kbd-key kbd-light">F4</kbd> Efectivo</span><span><kbd class="kbd-key kbd-light">F2</kbd> Tarjeta</span>
-    <span><kbd class="kbd-key kbd-light">F3</kbd> Mixto</span><span><kbd class="kbd-key kbd-light">F1</kbd> Buscar</span><span><kbd class="kbd-key kbd-light">F8</kbd> Vaciar</span>
+    <span><kbd class="kbd-key kbd-light">F3</kbd> Mixto</span><span><kbd class="kbd-key kbd-light">F1</kbd>/<kbd class="kbd-key kbd-light">F10</kbd> Buscar</span><span><kbd class="kbd-key kbd-light">F8</kbd> Vaciar</span>
   </p>
 </div>`;
 
@@ -2505,7 +2667,7 @@ function pintarCajonUI(){
   const b = g('btnCajon');
   if(b){ b.classList.toggle('hidden', c.modo==='off'); b.classList.toggle('flex', c.modo!=='off'); }
   const h = g('atajosCaja');
-  if(h) h.textContent = 'F1 buscar · F4 efectivo · F2 tarjeta · F3 mixto · Enter confirma' + (c.modo!=='off' ? ' · F9 cajón' : '');
+  if(h) h.textContent = 'F1/F10 buscar · F4 efectivo · F2 tarjeta · F3 mixto · Enter confirma' + (c.modo!=='off' ? ' · F9 cajón' : '');
 }
 if(serialSupported()){
   navigator.serial.addEventListener('disconnect', e=>{
@@ -3049,6 +3211,7 @@ async function showPaymentModal(metodo){
   closeMobileCart();
   g('payModal').classList.remove('hidden');
   enfocarCobro(metodo);
+  if(typeof mpPrecalentar==='function') mpPrecalentar();   // despierta la función de Mercado Pago mientras el cliente paga
 }
 /* Enter confirma el cobro. En efectivo, Enter con el monto vacío = pagó exacto. */
 document.addEventListener('keydown', e=>{
@@ -3268,7 +3431,8 @@ async function finalizarVenta(pago, opts={}){
 
     /* La venta se guarda SIEMPRE en el dispositivo primero: así el cobro
        nunca se traba aunque no haya internet. Después se sube a Firebase. */
-    const stockDeltas = items.filter(i=>!i.isRecharge).map(i=>({barcode:i.barcode, qty:i.quantity}));
+    /* Las promociones se desarman: «2x60» descuenta 2 caguamas del inventario */
+    const stockDeltas = deltasDeItems(items);
     outboxPush({
       id: localId, type:'sale', tsISO: saleData.tsISO, tries:0,
       payload: saleData,
@@ -3366,6 +3530,8 @@ function ticketLines(sale){
   (sale.items||[]).forEach(it=>{
     const qty = it.isBulk ? `${round3(it.quantity)} kg` : `${it.quantity}`;
     L.push({t:'text', k:'item', text:it.name});
+    if(it.isPromo) (it.items||[]).forEach(c=>
+      L.push({t:'text', k:'meta', text:`  incluye ${round3((Number(c.qty)||0)*(Number(it.quantity)||0))} ${c.name||c.barcode}`}));
     L.push({t:'row', k:'itemrow', l:`${qty} x ${fmt(it.price)}`, r:fmt(it.subtotal)});
   });
   L.push({t:'hr'});
@@ -3618,6 +3784,7 @@ function switchTab(tab){
   if(tab==='hardware') updatePrinterUI();
   if(tab==='branches') renderBranches();
   if(tab==='recharges') renderCarriersTable();
+  if(tab==='promos' && typeof renderPromosTable==='function') renderPromosTable();
   if(tab==='contract') cargarMiContrato();
 }
 
@@ -4155,6 +4322,16 @@ async function saveProduct(){
   if(!barcode && !S.editingBarcode) {
     barcode = 'GR-' + Math.floor(1000 + Math.random() * 9000); 
   }
+  /* Un código con «/» rompe Firestore: se cambia por «-» y se avisa */
+  if(!S.editingBarcode){
+    const seguro = codigoSeguro(barcode);
+    if(seguro !== barcode){
+      showToast(`El código no puede llevar «/»: se guardó como «${seguro}»`,'warning');
+      barcode = seguro;
+      g('pf_barcode').value = seguro;
+    }
+    if(!barcode){ showToast('El código no es válido','error'); return; }
+  }
   
   const data={name,price,stock,category,favorite,isBulk,active:true,updatedAt:FS.FieldValue.serverTimestamp()};
   /* Si el código viene del catálogo, se guardan sus datos de referencia */
@@ -4391,16 +4568,16 @@ async function voidSale(){
     });
     /* Se repone solo lo que de verdad se descontó (stockApplied).
        Ventas viejas no lo traen: se usa lo vendido, sin recargas. */
-    const items = (_curSaleDetail.items||[]).filter(it=>!it.isRecharge);
-    const repo = Array.isArray(_curSaleDetail.stockApplied)
-      ? _curSaleDetail.stockApplied
-      : items.map(it=>({barcode:it.barcode, qty:it.quantity}));
+    /* Las promociones se desarman en sus productos (igual que al vender) */
+    const vendidos = deltasDeItems(_curSaleDetail.items||[]);
+    const repo = Array.isArray(_curSaleDetail.stockApplied) ? _curSaleDetail.stockApplied : vendidos;
     repo.forEach(r=>{
-      if(!r.qty) return;
+      if(!r.qty || String(r.barcode).includes('/')) return;
       db.collection('products').doc(r.barcode).update({stock:FS.FieldValue.increment(r.qty)}).catch(()=>{});
     });
-    items.forEach(it=>{
-      db.collection('products').doc(it.barcode).update({salesCount:FS.FieldValue.increment(-it.quantity)}).catch(()=>{});
+    vendidos.forEach(r=>{
+      if(String(r.barcode).includes('/')) return;
+      db.collection('products').doc(r.barcode).update({salesCount:FS.FieldValue.increment(-r.qty)}).catch(()=>{});
     });
     showToast('Venta anulada, stock repuesto ✅','success');
     hideSaleDetail(); loadHistory(); loadMetrics(document.querySelector('.pbtn.on')?.dataset.period||'day');
@@ -5269,7 +5446,8 @@ async function commitSaleWithStock(item){
     if(d.barcode && !String(d.barcode).includes('/')) need[d.barcode] = round3((need[d.barcode]||0) + (d.qty||0));
   });
   const codes = Object.keys(need);
-  const nameOf = code => (p.items||[]).find(i=>i.barcode===code)?.name || code;
+  const nameOf = code => (p.items||[]).find(i=>i.barcode===code)?.name
+    || (p.items||[]).flatMap(i=>i.isPromo ? (i.items||[]) : []).find(c=>c.barcode===code)?.name || code;
 
   return dbRoot.runTransaction(async tx=>{
     const saleSnap = await tx.get(saleRef);
@@ -5940,6 +6118,7 @@ document.addEventListener('keydown',e=>{
     hideBranchModal(); hideReassignBranchModal(); hideCarrierModal(); hideRechargeModal();
     hideEntryModal(); hideExpenseModal(); hideShiftDetail(); hideSyncModal();
     hideBloqueo(); hideScheduleModal(); hideAccessModal();
+    if(typeof hidePromoModal==='function') hidePromoModal();
     if(!g('confirmModal').classList.contains('hidden')) _confirmResolve(false);
     closeMobileCart();
   }
@@ -5951,6 +6130,15 @@ document.addEventListener('keydown',e=>{
      && g('adminPanel').classList.contains('hidden')
      && ![...document.querySelectorAll('[id$="Modal"]')].some(m=>!m.classList.contains('hidden'))){
     g('searchInput').focus();
+  }
+  /* F10 = ir al buscador (también funciona con ventanas de cobro abiertas) */
+  if(modoVenta() && e.key==='F10'){
+    e.preventDefault();
+    const adminAbierto = !g('adminPanel').classList.contains('hidden');
+    if(adminAbierto) return;
+    hidePayModal(); hideReceiptModal();
+    const si = g('searchInput'); si.focus(); si.select();
+    return;
   }
   if(modoVenta() && /^F[1-9]$/.test(e.key)){
     const adminAbierto = !g('adminPanel').classList.contains('hidden');

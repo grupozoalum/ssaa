@@ -22,6 +22,7 @@
   <script src="https://www.gstatic.com/firebasejs/10.7.1/firebase-app-compat.js"></script>
   <script src="https://www.gstatic.com/firebasejs/10.7.1/firebase-auth-compat.js"></script>
   <script src="https://www.gstatic.com/firebasejs/10.7.1/firebase-firestore-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.7.1/firebase-functions-compat.js"></script>
   <link rel="stylesheet" href="styles.css?v=20261010i"/>
 </head>
 <body class="bg-slate-100 overflow-hidden">
@@ -122,7 +123,7 @@
         <div class="relative flex-1 min-w-0" id="searchWrapper">
           <i class="fa-solid fa-barcode absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 text-sm pointer-events-none"></i>
           <input id="searchInput" type="search" inputmode="text" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" enterkeyhint="search"
-            placeholder="Buscar producto o código…"
+            placeholder="Buscar producto, promoción o código… (F10)"
             oninput="handleSearchInput(this.value)"
             class="w-full pl-9 pr-3 py-3 border border-slate-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent"
             onkeydown="if(event.key==='Enter'){event.preventDefault();doSearch();}">
@@ -339,7 +340,7 @@
           <i class="fa-solid fa-trash"></i>Vaciar venta <kbd class="kbd-key kbd-light">F8</kbd>
         </button>
       </div>
-      <p id="atajosCaja" class="text-[10px] text-center text-slate-400 pt-1">F1 buscar · F4 efectivo · F2 tarjeta · F3 mixto · Enter confirma · F9 cajón</p>
+      <p id="atajosCaja" class="text-[10px] text-center text-slate-400 pt-1">F1/F10 buscar · F4 efectivo · F2 tarjeta · F3 mixto · Enter confirma · F9 cajón</p>
     </div>
   </aside>
 
@@ -476,6 +477,9 @@
       <button class="atab w-full text-left px-3 py-2.5 rounded-lg text-sm flex items-center gap-2.5 min-h-[44px]" id="tab-products" onclick="switchTab('products')">
         <i class="fa-solid fa-boxes-stacked w-4 text-center"></i>Productos
       </button>
+      <button class="atab w-full text-left px-3 py-2.5 rounded-lg text-sm flex items-center gap-2.5 min-h-[44px]" id="tab-promos" onclick="switchTab('promos')">
+        <i class="fa-solid fa-tags w-4 text-center"></i>Promociones
+      </button>
       <button class="atab w-full text-left px-3 py-2.5 rounded-lg text-sm flex items-center gap-2.5 min-h-[44px]" id="tab-inventory" onclick="switchTab('inventory')">
         <i class="fa-solid fa-dolly w-4 text-center"></i>Entradas
       </button>
@@ -537,6 +541,9 @@
       </button>
       <button class="matab px-4 py-2 text-sm font-semibold rounded-t-lg min-h-[40px]" id="mtab-products" onclick="switchTab('products')">
         📦 Productos
+      </button>
+      <button class="matab px-4 py-2 text-sm font-semibold rounded-t-lg min-h-[40px]" id="mtab-promos" onclick="switchTab('promos')">
+        🏷️ Promociones
       </button>
       <button class="matab px-4 py-2 text-sm font-semibold rounded-t-lg min-h-[40px]" id="mtab-inventory" onclick="switchTab('inventory')">
         📥 Entradas
@@ -1191,6 +1198,36 @@
             </thead>
             <tbody id="carriersTableBody" class="divide-y divide-slate-100">
               <tr><td colspan="4" class="text-center py-10 text-slate-400">Cargando…</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
+    <!-- ─ PROMOCIONES (paquetes: 2x60, combos…) ─ -->
+    <div id="admin-promos" class="admin-content hidden p-3 sm:p-5">
+      <div class="flex items-center justify-between mb-3">
+        <h1 class="text-lg sm:text-xl font-black text-slate-800">🏷️ Promociones <span id="promosCount" class="text-sm font-normal text-slate-400"></span></h1>
+        <button onclick="abrirPromo()"
+          class="bg-indigo-600 hover:bg-indigo-700 active:bg-indigo-800 text-white px-3 sm:px-4 py-2 rounded-lg text-sm font-semibold flex items-center gap-1.5 transition min-h-[40px]">
+          <i class="fa-solid fa-plus"></i><span class="hidden sm:inline">Nueva promoción</span>
+        </button>
+      </div>
+      <p class="text-xs text-slate-400 mb-3">Un precio especial para varios productos juntos (ej. <b>Caguamas 2x60</b>). En la caja se busca por su nombre o código y al cobrarla se descuentan del inventario los productos que trae.</p>
+      <div class="bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden mb-4">
+        <div class="table-scroll">
+          <table class="w-full text-sm min-w-[620px]">
+            <thead class="bg-slate-50 border-b border-slate-200">
+              <tr>
+                <th class="text-left px-3 sm:px-4 py-3 text-slate-500 font-semibold text-xs">Promoción</th>
+                <th class="text-left px-3 sm:px-4 py-3 text-slate-500 font-semibold text-xs">Incluye</th>
+                <th class="text-right px-3 sm:px-4 py-3 text-slate-500 font-semibold text-xs">Precio</th>
+                <th class="text-center px-3 sm:px-4 py-3 text-slate-500 font-semibold text-xs">Existencias</th>
+                <th class="text-right px-3 sm:px-4 py-3 text-slate-500 font-semibold text-xs">Acciones</th>
+              </tr>
+            </thead>
+            <tbody id="promosTableBody" class="divide-y divide-slate-100">
+              <tr><td colspan="5" class="text-center py-10 text-slate-400">Cargando…</td></tr>
             </tbody>
           </table>
         </div>
@@ -2299,6 +2336,58 @@
   </div>
 </div>
 
+<!-- PROMOCIÓN: crear / editar -->
+<div id="promoModal" class="hidden fixed inset-0 z-[66] flex items-end sm:items-center justify-center bg-black/60 backdrop-blur-sm p-0 sm:p-4">
+  <div class="bg-white rounded-t-2xl sm:rounded-2xl shadow-2xl p-5 sm:p-6 w-full sm:max-w-lg sheet overflow-y-auto max-h-[95vh]">
+    <div class="flex items-center justify-between mb-4">
+      <h3 id="promoModalTitle" class="font-bold text-slate-800 text-lg"><i class="fa-solid fa-tags text-amber-500 mr-1.5"></i>Nueva promoción</h3>
+      <button onclick="hidePromoModal()" class="text-slate-400 hover:text-slate-600 p-1 min-w-[36px] min-h-[36px] flex items-center justify-center"><i class="fa-solid fa-xmark text-xl"></i></button>
+    </div>
+    <div class="space-y-3">
+      <div>
+        <label class="text-xs font-semibold text-slate-500 mb-1 block">Nombre (así la busca el cajero)</label>
+        <input id="pm_name" type="text" maxlength="120" placeholder="Ej: Caguamas Tecate 2x60"
+          class="w-full border border-slate-200 rounded-xl px-4 py-3 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 min-h-[48px]">
+      </div>
+      <div class="grid grid-cols-2 gap-2">
+        <div>
+          <label class="text-xs font-semibold text-slate-500 mb-1 block">Precio de la promo</label>
+          <input id="pm_price" type="number" inputmode="decimal" min="0" step="0.5" placeholder="60" oninput="pintarPromoItems(true)"
+            class="w-full border border-slate-200 rounded-xl px-4 py-3 text-sm font-bold focus:outline-none focus:ring-2 focus:ring-indigo-500 min-h-[48px]">
+        </div>
+        <div>
+          <label class="text-xs font-semibold text-slate-500 mb-1 block">Código <span class="font-normal">(opcional)</span></label>
+          <input id="pm_code" type="text" maxlength="60" autocomplete="off" placeholder="Ej: 2X60"
+            class="w-full border border-slate-200 rounded-xl px-4 py-3 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-indigo-500 min-h-[48px]">
+        </div>
+      </div>
+
+      <div>
+        <label class="text-xs font-semibold text-slate-500 mb-1 block">Productos que trae</label>
+        <div id="pm_buscarWrap" class="relative">
+          <input id="pm_buscar" type="search" autocomplete="off" placeholder="Busca o escanea un producto…"
+            oninput="pmBuscar(this.value)" onkeydown="pmBuscarEnter(event)"
+            class="w-full border border-slate-200 rounded-xl px-4 py-3 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 min-h-[48px]">
+          <div id="pm_resultados" class="hidden absolute z-10 left-0 right-0 mt-1 bg-white border border-slate-200 rounded-xl shadow-lg max-h-64 overflow-y-auto"></div>
+        </div>
+        <div id="pm_items" class="space-y-2 mt-2"></div>
+      </div>
+
+      <div id="pm_resumen" class="text-sm space-y-1 bg-slate-50 rounded-xl px-3 py-2 empty:hidden"></div>
+
+      <label class="flex items-center gap-2 text-sm text-slate-600 cursor-pointer">
+        <input id="pm_active" type="checkbox" checked class="accent-indigo-600 w-4 h-4">
+        Activa (aparece en la caja)
+      </label>
+      <p id="pm_err" class="text-red-500 text-xs hidden px-3 py-2 bg-red-50 rounded-lg"></p>
+      <div class="flex gap-3 pt-1">
+        <button onclick="hidePromoModal()" class="flex-1 bg-slate-100 hover:bg-slate-200 text-slate-700 py-3 rounded-xl font-semibold text-sm transition min-h-[48px]">Cancelar</button>
+        <button id="pm_btn" onclick="guardarPromo()" class="flex-1 bg-indigo-600 hover:bg-indigo-700 active:bg-indigo-800 disabled:opacity-50 text-white py-3 rounded-xl font-semibold text-sm transition min-h-[48px]"><i class="fa-solid fa-floppy-disk mr-1"></i>Guardar</button>
+      </div>
+    </div>
+  </div>
+</div>
+
 <!-- RECHARGE (cashier) -->
 <div id="rechargeModal" class="hidden fixed inset-0 z-[65] flex items-end sm:items-center justify-center bg-black/60 backdrop-blur-sm p-0 sm:p-4">
   <div class="bg-white rounded-t-2xl sm:rounded-2xl shadow-2xl p-5 sm:p-6 w-full sm:max-w-sm sheet overflow-y-auto">
@@ -2428,8 +2517,9 @@
 <!-- ▌TICKET PARA IMPRIMIR ▐ — solo se ve al imprimir desde el navegador -->
 <div id="ticketPrint" aria-hidden="true"></div>
 
-<script src="app.js?v=20261028f"></script>
-<script src="mp-point.js?v=20261028f"></script>
-<script src="importar-excel.js?v=20261028f"></script>
+<script src="app.js?v=20261029c"></script>
+<script src="mp-point.js?v=20261029c"></script>
+<script src="importar-excel.js?v=20261029c"></script>
+<script src="promos.js?v=20261029c"></script>
 </body>
 </html>
