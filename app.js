@@ -4302,8 +4302,8 @@ function switchTab(tab){
   if(tab==='inventory') initInventoryTab();
   if(tab==='expenses') loadExpenses();
   if(tab==='sellers'){ loadSellers(); pintarPermisosUI(); }
-  if(tab==='history') loadHistory();
-  if(tab==='shifts'){ loadShiftsAdmin(); pintarPermisosUI(); }
+  if(tab==='history'){ pintarZonaHoraria(); loadHistory(); }
+  if(tab==='shifts'){ loadShiftsAdmin(); pintarPermisosUI(); pintarZonaHoraria(); }
   if(tab==='hardware') updatePrinterUI();
   if(tab==='branches') renderBranches();
   if(tab==='recharges') renderCarriersTable();
@@ -5005,6 +5005,7 @@ function subscribePermisos(){
   S.permisosUnsub = db.collection('config').doc('permisos').onSnapshot(snap=>{
     S.permisos = snap.exists ? (snap.data()||{}) : {};
     pintarPermisosUI();
+    if(typeof pintarZonaHoraria==='function') pintarZonaHoraria();
   }, err=>{ console.warn('Permisos:', err.code||err.message); S.permisosUnsub = null; });
 }
 function puedeAltaProductos(){
@@ -5231,8 +5232,9 @@ async function loadHistory(){
     let q=sellerId?db.collection('sales').where('sellerId','==',sellerId):db.collection('sales').orderBy('timestamp','desc');
     const snap=await q.limit(200).get();
     let sales=snap.docs.map(d=>({id:d.id,...d.data()}));
-    if(startD){const s=new Date(startD+'T00:00:00');sales=sales.filter(x=>x.timestamp?.toDate?.()>=s);}
-    if(endD){const e=new Date(endD+'T23:59:59');sales=sales.filter(x=>x.timestamp?.toDate?.()<=e);}
+    /* Días completos en la zona del negocio (no en la de la computadora) */
+    if(startD){const s=inicioFechaNegocio(startD);sales=sales.filter(x=>x.timestamp?.toDate?.()>=s);}
+    if(endD){const e=new Date(inicioFechaNegocio(endD).getTime()+864e5-1);sales=sales.filter(x=>x.timestamp?.toDate?.()<=e);}
     const branchFilter=g('histBranchFilter').value;
     if(branchFilter) sales=sales.filter(x=>x.branchId===branchFilter);
     if(!g('histShowVoided').checked) sales=sales.filter(x=>!x.voided);
@@ -6171,9 +6173,59 @@ function newLocalId(){ return 'loc'+Date.now().toString(36)+Math.random().toStri
    zona horaria del negocio (CDMX por defecto), sin importar la de la PC.
 ════════════════════════════════════ */
 const RELOJ_DESFASE_KEY = 'posRelojDesfase_v1';   // servidor − computadora (ms), para cuando aún no sincroniza
+/* La zona la elige el dueño en Admin → Historial (se guarda en config/permisos.zonaHoraria) */
+const ZONAS_MX = [
+  ['America/Mexico_City', 'Centro (CDMX, Guadalajara, Monterrey)'],
+  ['America/Cancun',      'Sureste (Quintana Roo)'],
+  ['America/Mazatlan',    'Pacífico (Sinaloa, Nayarit, BCS)'],
+  ['America/Chihuahua',   'Chihuahua'],
+  ['America/Hermosillo',  'Sonora'],
+  ['America/Tijuana',     'Noroeste (Baja California)'],
+  ['America/Matamoros',   'Frontera norte – Tamaulipas/Coahuila (con horario de verano)'],
+  ['America/Ciudad_Juarez','Frontera norte – Ciudad Juárez (con horario de verano)']
+];
 function zonaNegocio(){
-  try{ return (NEGOCIO && (NEGOCIO.zonaHoraria || (NEGOCIO.configuracion||{}).zonaHoraria)) || 'America/Mexico_City'; }
-  catch(e){ return 'America/Mexico_City'; }
+  try{
+    const z = (typeof S!=='undefined' && S.permisos && S.permisos.zonaHoraria)
+           || (NEGOCIO && (NEGOCIO.zonaHoraria || (NEGOCIO.configuracion||{}).zonaHoraria))
+           || 'America/Mexico_City';
+    new Intl.DateTimeFormat('es-MX', {timeZone: z});   // ¿es válida?
+    return z;
+  }catch(e){ return 'America/Mexico_City'; }
+}
+/* Medianoche del negocio de una fecha 'AAAA-MM-DD' */
+function inicioFechaNegocio(str){
+  const [y,m,d] = String(str).split('-').map(Number);
+  return inicioDiaNegocio(new Date(Date.UTC(y, (m||1)-1, d||1, 18)));   // 18:00 UTC cae en ese mismo día en todo México
+}
+function pintarZonaHoraria(){
+  const z = zonaNegocio();
+  ['histTz','shiftTz'].forEach(id=>{
+    const sel = g(id); if(!sel) return;
+    if(!sel.options.length || sel.dataset.listo !== '1'){
+      const lista = ZONAS_MX.some(([v])=>v===z) ? ZONAS_MX : [...ZONAS_MX, [z, z.replace('America/','').replace(/_/g,' ')]];
+      sel.innerHTML = lista.map(([v,t])=>`<option value="${v}">${t}</option>`).join('');
+      sel.dataset.listo = '1';
+    }
+    sel.value = z;
+    sel.disabled = !S.isAdmin;
+  });
+  const ahora = fmtHoraNegocio(ahoraSeguro(), {weekday:'short', hour:'2-digit', minute:'2-digit'});
+  ['histTzHora','shiftTzHora'].forEach(id=>{ const el=g(id); if(el) el.textContent = 'Ahora: ' + ahora; });
+}
+async function cambiarZonaHoraria(sel){
+  if(!S.isAdmin){ pintarZonaHoraria(); return; }
+  const z = sel.value;
+  try{ new Intl.DateTimeFormat('es-MX', {timeZone: z}); }catch(e){ showToast('Zona horaria no válida','error'); return; }
+  S.permisos = {...(S.permisos||{}), zonaHoraria: z};   // se aplica al momento en esta pantalla
+  pintarZonaHoraria();
+  try{
+    await db.collection('config').doc('permisos').set({zonaHoraria: z, updatedAt: FS.FieldValue.serverTimestamp()}, {merge:true});
+    showToast('Zona horaria del negocio: ' + (ZONAS_MX.find(([v])=>v===z)||[z,z])[1], 'success');
+  }catch(e){ showToast('No se pudo guardar: '+e.message,'error'); }
+  /* Todo se vuelve a mostrar con la zona nueva */
+  if(!g('admin-history')?.classList.contains('hidden')) loadHistory();
+  if(!g('admin-shifts')?.classList.contains('hidden')) renderShiftsTable();
 }
 function ahoraSeguro(){
   const h = (typeof horaSegura === 'function') ? horaSegura() : null;

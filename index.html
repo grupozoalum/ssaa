@@ -966,6 +966,11 @@
       <div class="flex flex-wrap items-center justify-between gap-2 mb-4">
         <h1 class="text-lg sm:text-xl font-black text-slate-800">🧾 Historial</h1>
         <div class="flex flex-wrap gap-2 w-full sm:w-auto">
+          <label class="flex items-center gap-1.5 text-xs text-slate-600 bg-white border border-slate-200 rounded-lg pl-2.5 pr-1 min-h-[36px]" title="Zona horaria del negocio: con esta hora se guardan y se muestran ventas, tickets y cortes">
+            <i class="fa-solid fa-clock text-indigo-500"></i>
+            <select id="histTz" onchange="cambiarZonaHoraria(this)" class="py-2 text-xs bg-transparent focus:outline-none max-w-[200px]"></select>
+            <span id="histTzHora" class="hidden md:inline text-[11px] text-slate-400 pr-1.5"></span>
+          </label>
           <select id="histBranchFilter" onchange="loadHistory()" class="border border-slate-200 rounded-lg px-2 sm:px-3 py-2 text-xs focus:outline-none bg-white min-h-[36px]">
             <option value="">Todas las sucursales</option>
           </select>
@@ -1018,6 +1023,11 @@
             class="w-40 border border-slate-200 rounded-lg px-3 py-2 text-sm font-bold min-h-[40px]">
         </div>
         <button onclick="guardarFondoCaja()" class="bg-indigo-600 hover:bg-indigo-700 text-white px-4 py-2 rounded-lg text-sm font-semibold min-h-[40px]">Guardar</button>
+        <div class="ml-auto">
+          <label class="text-xs font-semibold text-slate-600 mb-1 block"><i class="fa-solid fa-clock text-indigo-500 mr-1"></i>Zona horaria del negocio</label>
+          <select id="shiftTz" onchange="cambiarZonaHoraria(this)" class="border border-slate-200 rounded-lg px-2 py-2 text-xs bg-white min-h-[40px] max-w-[240px]"></select>
+          <span id="shiftTzHora" class="block text-[11px] text-slate-400 mt-0.5"></span>
+        </div>
         <p class="text-[11px] text-slate-400 w-full">Al cerrar turno, el cajero cuenta todo, deja este fondo y retira lo demás. El siguiente turno se compara contra este fondo (no contra todo el dinero).</p>
       </div>
       <div class="flex flex-wrap gap-2 mb-3">
@@ -2699,10 +2709,10 @@
 <!-- ▌TICKET PARA IMPRIMIR ▐ — solo se ve al imprimir desde el navegador -->
 <div id="ticketPrint" aria-hidden="true"></div>
 
-<script src="app.js?v=20261031a"></script>
-<script src="mp-point.js?v=20261031a"></script>
-<script src="importar-excel.js?v=20261031a"></script>
-<script src="promos.js?v=20261031a"></script>
-<script src="devoluciones.js?v=20261031a"></script>
+<script src="app.js?v=20261031b"></script>
+<script src="mp-point.js?v=20261031b"></script>
+<script src="importar-excel.js?v=20261031b"></script>
+<script src="promos.js?v=20261031b"></script>
+<script src="devoluciones.js?v=20261031b"></script>
 </body>
 </html>
