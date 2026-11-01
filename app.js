@@ -3060,7 +3060,7 @@ async function abrirCajon(origen='manual'){
 function registrarAperturaCajon(motivo){
   try{
     if(!TENANT || !S.user) return;
-    const now = new Date();
+    const now = ahoraSeguro();
     db.collection('aperturasCajon').add({
       motivo,
       userId: S.user.uid,
@@ -3443,7 +3443,7 @@ function showParkedModal(){
   el.innerHTML = list.length ? list.map(p=>{
     const total=p.cart.reduce((s,i)=>s+i.subtotal,0);
     const count=p.cart.reduce((s,i)=>s+i.quantity,0);
-    const when=new Date(p.ts).toLocaleTimeString('es-MX',{hour:'2-digit',minute:'2-digit'});
+    const when=fmtHoraNegocio(new Date(p.ts),{hour:'2-digit',minute:'2-digit'});
     return `<div class="border border-slate-200 rounded-xl p-3 flex items-center justify-between gap-2">
       <div class="min-w-0">
         <p class="text-sm font-semibold text-slate-800 truncate">${esc(p.label)} ${p.cart.length>1?'+ '+(p.cart.length-1)+' más':''}</p>
@@ -3529,7 +3529,7 @@ function beep(kind='add'){
 ════════════════════════════════════ */
 function initClock(){
   const tick=()=>{
-    const s=new Date().toLocaleString('es-MX',{weekday:'short',hour:'2-digit',minute:'2-digit'});
+    const s=fmtHoraNegocio(ahoraSeguro(),{weekday:'short',hour:'2-digit',minute:'2-digit'});
     const navC=g('navClock'); if(navC) navC.textContent=s;
     const cdC=g('cdClock'); if(cdC) cdC.textContent=s;
   };
@@ -3843,7 +3843,7 @@ async function finalizarVenta(pago, opts={}){
   const btn=g('processBtn');
   if(limpiar){ btn.disabled=true; btn.innerHTML='<i class="fa-solid fa-spinner fa-spin mr-2"></i>Guardando…'; }
   try{
-    const now=new Date();
+    const now=ahoraSeguro();   // hora del servidor (no la de Windows)
     const localId = pago.localId || newLocalId();
     if(loadOutbox().some(x=>x.id===localId)) return;   // ya estaba registrada
     const items = pago.cart || [];
@@ -3873,8 +3873,8 @@ async function finalizarVenta(pago, opts={}){
       shiftId:S.currentShift?.id||null,
       tsISO: now.toISOString(),
       date:localDateStr(now),
-      year:now.getFullYear(),
-      month:now.getMonth()+1,
+      year:partesTZ(now).y,
+      month:partesTZ(now).m,
       voided:false,
       createdOffline: !isOnline(),
       ...(pago.mp ? {mp: pago.mp} : {}),   // ids de Mercado Pago para conciliar y devolver
@@ -3975,9 +3975,9 @@ function sinLinks(t){
     .replace(/\s{2,}/g,' ').trim();
 }
 function fechaTicket(iso){
-  const d = iso ? new Date(iso) : new Date();
-  return d.toLocaleDateString('es-MX',{day:'2-digit',month:'2-digit',year:'2-digit'})
-       + ' ' + d.toLocaleTimeString('es-MX',{hour:'2-digit',minute:'2-digit',hour12:false});
+  const d = iso ? new Date(iso) : ahoraSeguro();
+  return fmtHoraNegocio(d,{day:'2-digit',month:'2-digit',year:'2-digit'}).split(',')[0]
+       + ' ' + fmtHoraNegocio(d,{hour:'2-digit',minute:'2-digit',hour12:false});
 }
 
 /* Renglones del ticket de venta.
@@ -4437,8 +4437,12 @@ async function loadMetrics(period){
   const labels={day:'Hoy',week:'Esta semana',month:'Este mes',year:'Este año'};
   g('kpiPeriodLabel').textContent=labels[period];
   ['kpiTotal','kpiCash','kpiTx','kpiAvg'].forEach(id=>g(id).textContent='…');
-  const now=new Date();
-  const starts={day:new Date(now.getFullYear(),now.getMonth(),now.getDate()),week:new Date(now-7*864e5),month:new Date(now.getFullYear(),now.getMonth(),1),year:new Date(now.getFullYear(),0,1)};
+  const now=ahoraSeguro();
+  /* Inicio de cada periodo a la medianoche del negocio (no de la computadora) */
+  const hoy0=inicioDiaNegocio(now), pz=partesTZ(now);
+  const starts={day:hoy0, week:new Date(hoy0.getTime()-6*864e5),
+    month:new Date(hoy0.getTime()-(pz.d-1)*864e5),
+    year:inicioDiaNegocio(new Date(Date.UTC(pz.y,0,1,12)))};
   try{
     const snap=await db.collection('sales').where('timestamp','>=',FS.Timestamp.fromDate(starts[period])).get();
     const allSales=snap.docs.map(d=>({id:d.id,...d.data()}));
@@ -4478,8 +4482,9 @@ async function loadMetrics(period){
     g('kpiNet').textContent=fmt(net);
     g('kpiNet').className='kpi-val '+(net>=0?'text-emerald-700':'text-red-600');
 
-    const byDate={};sales.forEach(s=>{const d=s.timestamp?.toDate?.()?.toISOString?.()?.split('T')[0]||s.date;if(d)byDate[d]=(byDate[d]||0)+(s.total||0);});
-    const profitByDate={}; sales.forEach(s=>{const d=s.timestamp?.toDate?.()?.toISOString?.()?.split('T')[0]||s.date; if(d){const c=s.cost!=null?s.cost:sumItemsCost(s.items); profitByDate[d]=(profitByDate[d]||0)+((s.total||0)-c);} });
+    const diaDe=s=>s.timestamp?.toDate?.() ? localDateStr(s.timestamp.toDate()) : s.date;   // día en la zona del negocio (no UTC)
+    const byDate={};sales.forEach(s=>{const d=diaDe(s);if(d)byDate[d]=(byDate[d]||0)+(s.total||0);});
+    const profitByDate={}; sales.forEach(s=>{const d=diaDe(s); if(d){const c=s.cost!=null?s.cost:sumItemsCost(s.items); profitByDate[d]=(profitByDate[d]||0)+((s.total||0)-c);} });
     const expByDate={}; expenses.forEach(x=>{ if(x.date) expByDate[x.date]=(expByDate[x.date]||0)+(x.amount||0); });
     const expByCat={}; expenses.forEach(x=>{ const k=x.category||'Otros'; expByCat[k]=(expByCat[k]||0)+(x.amount||0); });
     drawProfitChart(byDate, expByDate, profitByDate);
@@ -5236,7 +5241,7 @@ async function loadHistory(){
     if(!sales.length){tbody.innerHTML='<tr><td colspan="5" class="py-10 text-center text-slate-400">Sin ventas en el período</td></tr>';return;}
     tbody.innerHTML=sales.map(s=>{
       const d=s.timestamp?.toDate?.();
-      const ds=d?d.toLocaleString('es-MX',{day:'2-digit',month:'short',hour:'2-digit',minute:'2-digit'}):'-';
+      const ds=d?fmtHoraNegocio(d,{day:'2-digit',month:'short',hour:'2-digit',minute:'2-digit'}):'-';
       /* Devolución (sale dinero) = rojo · Cambio = naranja · Venta con algo devuelto = aviso */
       const esDev = !!s.devolucion && !(s.items||[]).some(i=>!i.isCredit);
       const esCambio = !!s.devolucion && !esDev;
@@ -5267,7 +5272,7 @@ async function showSaleDetail(id){
     const doc=await db.collection('sales').doc(id).get();
     const s={id:doc.id,...doc.data()};
     _curSaleDetail=s;
-    const ds=s.timestamp?.toDate?.()?.toLocaleString('es-MX')||'–';
+    const ds=s.timestamp?.toDate?.() ? fmtHoraNegocio(s.timestamp.toDate(),{}) : '–';
     const methodLabel = s.payMethod==='cash'?'💵 Efectivo':s.payMethod==='card'?'💳 Tarjeta':'🔀 Mixto';
     g('saleDetailContent').innerHTML=`
       ${s.voided?`<div class="bg-red-50 border border-red-200 text-red-600 text-xs rounded-lg px-3 py-2 mb-3"><i class="fa-solid fa-ban mr-1"></i>Venta anulada${s.voidReason?': '+esc(s.voidReason):''}</div>`:''}
@@ -5343,10 +5348,10 @@ function exportCSV(){
   if(!S.histSales.length){showToast('Carga el historial primero','warning');return;}
   const h=['ID','Fecha','Vendedor','Subtotal','Descuento','Total','Método','Estado','Items'];
   const methodName = m => m==='cash'?'Efectivo':m==='card'?'Tarjeta':'Mixto';
-  const rows=S.histSales.map(s=>[s.id,s.timestamp?.toDate?.()?.toLocaleString('es-MX')||'',s.sellerName||'',s.subtotal??s.total??0,s.discountAmt||0,s.total||0,methodName(s.payMethod),s.voided?'Anulada':s.devolucion?((s.items||[]).some(i=>!i.isCredit)?'Cambio':'Devolución'):'Válida',(s.items||[]).map(i=>`${i.name}(x${i.quantity})`).join('; ')]);
+  const rows=S.histSales.map(s=>[s.id,(s.timestamp?.toDate?.() ? fmtHoraNegocio(s.timestamp.toDate(),{}) : ''),s.sellerName||'',s.subtotal??s.total??0,s.discountAmt||0,s.total||0,methodName(s.payMethod),s.voided?'Anulada':s.devolucion?((s.items||[]).some(i=>!i.isCredit)?'Cambio':'Devolución'):'Válida',(s.items||[]).map(i=>`${i.name}(x${i.quantity})`).join('; ')]);
   const csv=[h,...rows].map(r=>r.map(v=>`"${String(v).replace(/"/g,'""')}"`).join(',')).join('\n');
   const a=document.createElement('a'); a.href=URL.createObjectURL(new Blob(['\uFEFF'+csv],{type:'text/csv;charset=utf-8'}));
-  a.download='ventas_'+new Date().toISOString().split('T')[0]+'.csv'; a.click();
+  a.download='ventas_'+localDateStr()+'.csv'; a.click();
 }
 
 /* ════════════════════════════════════════════════════════════════
@@ -5373,6 +5378,15 @@ function permisoVigente(perfil, ahora){
 }
 
 const RELOJ = { base:null, fuente:'', prom:null, ultimoIntento:0 };
+function guardarDesfase(){
+  try{ if(RELOJ.base) localStorage.setItem(RELOJ_DESFASE_KEY, String(Math.round(RELOJ.base.server - RELOJ.base.wall))); }catch(e){}
+  const d = RELOJ.base ? RELOJ.base.wall - RELOJ.base.server : 0;
+  if(Math.abs(d) > 5*60000 && !S._avisoReloj){
+    S._avisoReloj = true;
+    const h = Math.round(Math.abs(d)/36e5*10)/10;
+    showToast(`⏰ La hora de esta computadora está ${d>0?'adelantada':'atrasada'} ${h>=1?h+' h':Math.round(Math.abs(d)/60000)+' min'}. El POS usa la hora correcta del servidor; conviene corregir la hora de Windows.`,'warning');
+  }
+}
 function sincronizarReloj(){
   if(RELOJ.prom) return RELOJ.prom;
   RELOJ.ultimoIntento = Date.now();
@@ -5383,7 +5397,7 @@ function sincronizarReloj(){
       const r  = await fetch(location.pathname + '?hora=' + Date.now(), {method:'HEAD', cache:'no-store'});
       const t1 = performance.now();
       const ms = Date.parse(r.headers.get('date') || '');
-      if(!isNaN(ms)){ RELOJ.base = {server: ms + 500, perf: (t0+t1)/2, wall: Date.now()}; RELOJ.fuente = 'servidor'; return true; }
+      if(!isNaN(ms)){ RELOJ.base = {server: ms + 500, perf: (t0+t1)/2, wall: Date.now()}; RELOJ.fuente = 'servidor'; guardarDesfase(); return true; }
     }catch(e){}
     /* 2) Respaldo: Firebase escribe su propia hora y la leemos */
     try{
@@ -5392,7 +5406,7 @@ function sincronizarReloj(){
         await ref.set({horaProbe: FS.FieldValue.serverTimestamp()}, {merge:true});
         const snap = await ref.get({source:'server'});
         const ts = snap.data() && snap.data().horaProbe;
-        if(ts && ts.toMillis){ RELOJ.base = {server: ts.toMillis(), perf: performance.now(), wall: Date.now()}; RELOJ.fuente = 'firebase'; return true; }
+        if(ts && ts.toMillis){ RELOJ.base = {server: ts.toMillis(), perf: performance.now(), wall: Date.now()}; RELOJ.fuente = 'firebase'; guardarDesfase(); return true; }
       }
     }catch(e){}
     return false;
@@ -5622,7 +5636,7 @@ function pintarSolicitudes(){
   const list = g('accessList'); if(!list) return;
   if(!n){ list.innerHTML = '<p class="text-sm text-slate-400 text-center py-6">No hay solicitudes pendientes.</p>'; return; }
   list.innerHTML = S.solicitudes.map(r => {
-    const t = r.createdAt && r.createdAt.toDate ? r.createdAt.toDate().toLocaleTimeString('es-MX',{hour:'2-digit',minute:'2-digit'}) : 'ahora';
+    const t = r.createdAt && r.createdAt.toDate ? fmtHoraNegocio(r.createdAt.toDate(),{hour:'2-digit',minute:'2-digit'}) : 'ahora';
     const opc = [[30,'30 min'],[60,'1 h'],[120,'2 h'],[240,'4 h']];
     return `<div class="border border-amber-200 bg-amber-50/50 rounded-xl p-3">
       <div class="flex items-start justify-between gap-2">
@@ -5852,7 +5866,7 @@ function openShiftModal(opts){
   g('shiftCloseHelp').classList.toggle('hidden', admin);
   if(S.currentShift && !admin){
     const desde = S.currentShift.openISO ? new Date(S.currentShift.openISO) : null;
-    g('shiftSinceEl').textContent = desde ? desde.toLocaleTimeString('es-MX',{hour:'2-digit',minute:'2-digit'}) : '—';
+    g('shiftSinceEl').textContent = desde ? fmtHoraNegocio(desde,{hour:'2-digit',minute:'2-digit'}) : '—';
     const n = S.currentShift.salesCount||0;
     g('shiftSalesCountEl').textContent = n + ' venta' + (n===1?'':'s');
   }
@@ -5916,13 +5930,14 @@ async function openShift(){
   if(rawAmt===''){ showToast('Escribe cuánto dinero hay en la caja (si no hay nada, pon 0)','warning'); g('shiftOpenInput').focus(); return; }
   const amt=parseFloat(rawAmt)||0;
   const id=newLocalId();
-  const now=new Date();
+  const now=ahoraSeguro();   // hora del servidor (no la de Windows)
   const data={
     sellerId:S.user.uid, sellerName:S.user.displayName||S.user.email,
     storeName: nombreNegocio(),
     branchId:S.userBranchId||null, branchName:S.userBranchName||null,
     openingCash:amt, cashSales:0, cardSales:0, totalSales:0, salesCount:0, cashOut:0,
-    status:'open', openISO:now.toISOString(), date:localDateStr(now)
+    status:'open', openISO:now.toISOString(), date:localDateStr(now),
+    relojPCdesfaseMs: Math.round(desfaseReloj())
   };
   S.currentShift={id, ...data, pendingCreate:true};
   outboxPush({id:'shiftopen_'+id, type:'shiftOpen', tsISO:now.toISOString(), tries:0,
@@ -5949,7 +5964,7 @@ async function closeShift(){
        + '\n\nRetiras ' + fmt(retiro) + ' y dejas ' + fmt(fondoDejado) + ' de fondo para el siguiente turno.',
     okLabel:'Cerrar turno', icon:'🗄️'});
   if(!ok) return;
-  const now=new Date();
+  const now=ahoraSeguro();   // hora del servidor (no la de Windows)
   const snapshot={
     openingCash:S.currentShift.openingCash||0,
     cashSales:S.currentShift.cashSales||0,
@@ -5961,7 +5976,7 @@ async function closeShift(){
   outboxPush({id:'shiftclose_'+S.currentShift.id, type:'shiftClose', tsISO:now.toISOString(), tries:0,
     payload:{shiftId:S.currentShift.id, countedCash:counted, expectedCash:expected,
              difference:counted-expected, closeISO:now.toISOString(), snapshot,
-             fondoDejado, retiro},
+             fondoDejado, retiro, relojPCdesfaseMs: Math.round(desfaseReloj())},
     label:`Corte de caja ${fmt(counted)}`});
   const diff=counted-expected;
   S.currentShift=null; saveLocalShift(); hideShiftModal();
@@ -6045,6 +6060,9 @@ async function showShiftDetail(id){
     <div class="bg-slate-50 rounded-xl p-3 text-sm mb-3">
       ${row('Vendedor', esc(s.sellerName||'–'))}
       ${row('Sucursal', esc(s.branchName||'—'))}
+      ${(()=>{ const d = s.relojPCdesfaseCierreMs ?? s.relojPCdesfaseMs; if(d==null || Math.abs(d) < 5*60000) return '';
+        const h = Math.round(Math.abs(d)/36e5*10)/10;
+        return `<p class="text-[11px] text-amber-700 bg-amber-50 rounded-lg px-2 py-1 my-1"><i class="fa-solid fa-clock mr-1"></i>La computadora tenía la hora ${d>0?'adelantada':'atrasada'} ${h>=1?h+' h':Math.round(Math.abs(d)/60000)+' min'}; aquí se muestra la hora real.</p>`; })()}
       ${row('Apertura', tsLabel(s.openAt, s.openISO))}
       ${row('Cierre', s.closeAt||s.closeISO?tsLabel(s.closeAt,s.closeISO):'Turno abierto')}
     </div>
@@ -6145,10 +6163,51 @@ const NET = { syncing:false, timer:null, lastSync:0 };
 
 const isOnline = () => navigator.onLine !== false;
 function newLocalId(){ return 'loc'+Date.now().toString(36)+Math.random().toString(36).slice(2,7); }
-function localDateStr(d){ const x=d||new Date(); return `${x.getFullYear()}-${String(x.getMonth()+1).padStart(2,'0')}-${String(x.getDate()).padStart(2,'0')}`; }
+/* ════════════════════════════════════
+   HORA DEL NEGOCIO
+   Todo lo que se guarda (ventas, turnos, gastos, entradas) usa la HORA DEL
+   SERVIDOR, no la de la computadora: si Windows tiene mal la hora o la zona
+   horaria, el corte y los reportes ya no se mueven. Y todo se muestra en la
+   zona horaria del negocio (CDMX por defecto), sin importar la de la PC.
+════════════════════════════════════ */
+const RELOJ_DESFASE_KEY = 'posRelojDesfase_v1';   // servidor − computadora (ms), para cuando aún no sincroniza
+function zonaNegocio(){
+  try{ return (NEGOCIO && (NEGOCIO.zonaHoraria || (NEGOCIO.configuracion||{}).zonaHoraria)) || 'America/Mexico_City'; }
+  catch(e){ return 'America/Mexico_City'; }
+}
+function ahoraSeguro(){
+  const h = (typeof horaSegura === 'function') ? horaSegura() : null;
+  if(h != null) return new Date(h);
+  let off = 0;
+  try{ off = Number(localStorage.getItem(RELOJ_DESFASE_KEY)) || 0; }catch(e){}
+  return new Date(Date.now() + off);
+}
+/* Diferencia entre la hora de la computadora y la real (ms). >0 = la PC va adelantada */
+function desfaseReloj(){ return Date.now() - ahoraSeguro().getTime(); }
+function partesTZ(d){
+  const o = {};
+  new Intl.DateTimeFormat('en-CA', {timeZone: zonaNegocio(), year:'numeric', month:'2-digit', day:'2-digit', hour:'2-digit', minute:'2-digit', second:'2-digit', hourCycle:'h23'})
+    .formatToParts(d).forEach(p => { o[p.type] = p.value; });
+  return { y:+o.year, m:+o.month, d:+o.day, h:+o.hour % 24, min:+o.minute, s:+o.second };
+}
+/* Fecha AAAA-MM-DD en la zona del negocio */
+function localDateStr(d){
+  const p = partesTZ(d || ahoraSeguro());
+  return `${p.y}-${String(p.m).padStart(2,'0')}-${String(p.d).padStart(2,'0')}`;
+}
+/* Medianoche (en la zona del negocio) del día de d */
+function inicioDiaNegocio(d){
+  const p = partesTZ(d);
+  return new Date(d.getTime() - ((p.h*60 + p.min)*60 + p.s)*1000 - d.getMilliseconds());
+}
+/* Formato de fecha/hora siempre en la zona del negocio */
+function fmtHoraNegocio(d, opts){
+  try{ return d.toLocaleString('es-MX', {...opts, timeZone: zonaNegocio()}); }
+  catch(e){ return d.toLocaleString('es-MX', opts); }
+}
 function tsLabel(ts, iso){
   const d = ts?.toDate?.() || (iso?new Date(iso):null);
-  return d ? d.toLocaleString('es-MX',{day:'2-digit',month:'short',hour:'2-digit',minute:'2-digit'}) : '—';
+  return d ? fmtHoraNegocio(d,{day:'2-digit',month:'short',hour:'2-digit',minute:'2-digit'}) : '—';
 }
 function sumItemsCost(items){ return (items||[]).reduce((a,i)=>a+((Number(i.cost)||0)*(i.quantity||0)),0); }
 
@@ -6336,6 +6395,8 @@ async function pushOutboxItem(item){
       status:'closed', countedCash:p.countedCash, expectedCash:p.expectedCash,
       difference:p.difference, closeISO:p.closeISO,
       ...(p.fondoDejado!=null ? {fondoDejado:p.fondoDejado, retiro:p.retiro} : {}),
+      ...(p.relojPCdesfaseMs!=null ? {relojPCdesfaseCierreMs:p.relojPCdesfaseMs} : {}),
+      closeServerAt: FS.FieldValue.serverTimestamp(),
       closeAt: FS.Timestamp.fromDate(new Date(p.closeISO)),
       ...(p.snapshot||{})
     },{merge:true}));
@@ -6405,7 +6466,7 @@ function renderSyncModal(){
     <div class="flex items-center justify-between gap-2 border border-slate-200 rounded-xl px-3 py-2">
       <div class="min-w-0">
         <p class="text-xs font-semibold text-slate-700 truncate">${esc(i.label||i.type)}</p>
-        <p class="text-[10px] text-slate-400">${new Date(i.tsISO).toLocaleString('es-MX')}${i.tries?` · ${i.tries} intento(s)`:''}</p>
+        <p class="text-[10px] text-slate-400">${fmtHoraNegocio(new Date(i.tsISO),{})}${i.tries?` · ${i.tries} intento(s)`:''}</p>
       </div>
       <span class="text-[10px] font-bold text-amber-600 bg-amber-50 border border-amber-200 px-2 py-0.5 rounded-full shrink-0">Pendiente</span>
     </div>`).join('') : '<p class="text-center text-slate-400 text-xs py-4">Sin registros pendientes</p>';
@@ -6518,7 +6579,7 @@ async function saveEntry(){
   const method=g('ie_payMethod').value;
 
   const btn=g('ie_saveBtn'); btn.disabled=true;
-  const now=new Date();
+  const now=ahoraSeguro();
   const localId=newLocalId();
   const entry={
     localId,
@@ -6666,7 +6727,7 @@ function openExpenseModal(opts={}){
   g('expenseModalTitle').innerHTML='<i class="fa-solid fa-money-bill-transfer text-red-500 mr-1.5"></i>'+(opts.fromShift?'Salida de efectivo':'Registrar gasto');
   g('ex_amount').value=''; g('ex_concept').value=''; g('ex_supplier').value=''; g('ex_note').value='';
   g('ex_category').value=opts.category||'';
-  g('ex_date').value=localDateStr(new Date());
+  g('ex_date').value=localDateStr();
   g('ex_method').value=opts.fromShift?'cash':'cash';
   const row=g('ex_shiftRow');
   const canShift=!!S.currentShift;
@@ -6693,7 +6754,7 @@ function editExpense(id){
   S.editingExpenseId=id; S.expenseCtx={fromShift:false};
   g('expenseModalTitle').innerHTML='<i class="fa-solid fa-pen-to-square text-indigo-500 mr-1.5"></i>Editar gasto';
   g('ex_amount').value=e.amount||''; g('ex_category').value=e.category||''; g('ex_concept').value=e.concept||'';
-  g('ex_date').value=e.date||localDateStr(new Date()); g('ex_method').value=e.method||'cash';
+  g('ex_date').value=e.date||localDateStr(); g('ex_method').value=e.method||'cash';
   g('ex_supplier').value=e.supplier||''; g('ex_note').value=e.note||'';
   g('ex_shiftRow').classList.add('hidden');
   renderExpenseCatChips();
@@ -6703,7 +6764,7 @@ async function saveExpense(){
   const amount=parseFloat(g('ex_amount').value);
   const category=g('ex_category').value.trim();
   const concept=g('ex_concept').value.trim();
-  const date=g('ex_date').value||localDateStr(new Date());
+  const date=g('ex_date').value||localDateStr();
   if(isNaN(amount)||amount<=0){ showToast('Captura un monto válido','error'); return; }
   if(!category){ showToast('Elige una categoría','error'); return; }
   if(!concept){ showToast('Describe el concepto del gasto','error'); return; }
@@ -6726,7 +6787,7 @@ async function saveExpense(){
       showToast('Gasto actualizado ✅','success');
     } else {
       const localId=newLocalId();
-      const now=new Date();
+      const now=ahoraSeguro();
       const useShift = g('ex_fromShift').checked && S.currentShift && method==='cash';
       const payload={...base, localId, source:'manual', entryId:null,
         shiftId: useShift?S.currentShift.id:null,
@@ -6876,7 +6937,7 @@ function downloadCSV(headers, rows, name){
   const csv=[headers,...rows].map(r=>r.map(v=>`"${String(v??'').replace(/"/g,'""')}"`).join(',')).join('\n');
   const a=document.createElement('a');
   a.href=URL.createObjectURL(new Blob(['\uFEFF'+csv],{type:'text/csv;charset=utf-8'}));
-  a.download=name+'_'+localDateStr(new Date())+'.csv'; a.click();
+  a.download=name+'_'+localDateStr()+'.csv'; a.click();
 }
 
 /* ── Ayuda visual del margen en el alta de productos ── */
@@ -6986,11 +7047,11 @@ document.addEventListener('keydown',e=>{
    INIT
 ════════════════════════════════════ */
 document.addEventListener('DOMContentLoaded',()=>{
-  const today=new Date().toISOString().split('T')[0];
-  const week =new Date(Date.now()-7*864e5).toISOString().split('T')[0];
+  const today=localDateStr();
+  const week =localDateStr(new Date(ahoraSeguro().getTime()-7*864e5));
   g('histEnd').value=today; g('histStart').value=week;
 
-  const monthStart=new Date(new Date().getFullYear(), new Date().getMonth(), 1).toISOString().split('T')[0];
+  const monthStart=localDateStr().slice(0,8)+'01';
   ['entStart','expStart'].forEach(id=>{ if(g(id)) g(id).value=monthStart; });
   ['entEnd','expEnd'].forEach(id=>{ if(g(id)) g(id).value=today; });
 

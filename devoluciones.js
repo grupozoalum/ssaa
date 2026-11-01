@@ -25,11 +25,11 @@ const folioVenta = s => String(s?.localId || s?.id || '').slice(-6).toUpperCase(
 const r2 = n => Math.round((Number(n) || 0) * 100) / 100;
 const horaVenta = s => {
   const d = s?.tsISO ? new Date(s.tsISO) : (s?.timestamp?.toDate?.() || null);
-  return d ? d.toLocaleTimeString('es-MX', { hour: '2-digit', minute: '2-digit' }) : '';
+  return d ? fmtHoraNegocio(d, { hour: '2-digit', minute: '2-digit' }) : '';
 };
 const fechaVenta = s => {
   const d = s?.tsISO ? new Date(s.tsISO) : (s?.timestamp?.toDate?.() || null);
-  return d ? d.toLocaleString('es-MX', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' }) : '';
+  return d ? fmtHoraNegocio(d, { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' }) : '';
 };
 const metodoVenta = s => (s.total || 0) < 0 && !(s.items || []).some(i => !i.isCredit) ? '↩️ Devolución'
   : s.payMethod === 'card' ? (s.tipoTarjeta === 'vales' ? '🎫 Vales' : '💳 Tarjeta')
@@ -53,7 +53,7 @@ async function cargarVentasTurno(){
   VT.cargando = true;
   const sh = S.currentShift;
   g('vt_sub').textContent = sh?.id
-    ? 'Turno abierto ' + (sh.openISO ? 'desde las ' + new Date(sh.openISO).toLocaleTimeString('es-MX', {hour:'2-digit', minute:'2-digit'}) : '')
+    ? 'Turno abierto ' + (sh.openISO ? 'desde las ' + fmtHoraNegocio(new Date(sh.openISO), {hour:'2-digit', minute:'2-digit'}) : '')
     : 'Tus ventas de hoy';
   g('vt_lista').innerHTML = '<p class="text-center text-slate-400 py-10"><i class="fa-solid fa-spinner fa-spin mr-1"></i>Cargando…</p>';
   try{
