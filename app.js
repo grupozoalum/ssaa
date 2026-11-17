@@ -1427,7 +1427,7 @@ function handleSearchInput(q) {
   S._ddLista = matches.slice(0, 40);
   if(!S._ddLista.length) { dd.classList.add('hidden'); return; }
   dd.innerHTML = S._ddLista.map((p, i) => `
-    <div data-i="${i}" onclick="selectFromDropdown('${esc(p.barcode)}')" class="dd-item p-3 ${p.isPromo?'bg-amber-50/60 hover:bg-amber-50':'hover:bg-slate-50'} cursor-pointer flex justify-between items-center transition">
+    <div data-i="${i}" role="option" onclick="selectFromDropdown('${esc(p.barcode)}')" onmousemove="ddHover(event,${i})" class="dd-item p-3 ${p.isPromo?'dd-promo':''} cursor-pointer flex justify-between items-center">
       <div class="min-w-0 flex-1">
         <p class="text-sm font-semibold text-slate-800 truncate">${p.isPromo?'<span class="inline-block bg-amber-400 text-white text-[9px] font-black px-1.5 py-0.5 rounded mr-1 align-middle">PROMO</span>':''}${esc(p.name)}</p>
         <p class="text-[10px] text-slate-400 truncate">${p.isPromo ? esc(contenidoPromo(p)) + (p.code?' · '+esc(p.code):'') : esc(p.barcode) + (p.category ? ' · ' + esc(p.category) : '')}</p>
@@ -1435,6 +1435,7 @@ function handleSearchInput(q) {
       <div class="text-right shrink-0 ml-2">
         <span class="text-sm font-black text-indigo-600 block">${fmt(p.price)}${p.isBulk?'<span class="text-[10px] font-semibold">/kg</span>':''}</span>
         ${stockOf(p)!==null && stockOf(p)<=0 ? '<span class="text-[10px] font-bold text-red-500">Agotado</span>' : ''}
+        <span class="dd-enter items-center gap-1 text-[10px] font-bold mt-0.5"><i class="fa-solid fa-arrow-turn-down fa-rotate-90"></i>Enter</span>
       </div>
     </div>`).join('')
     + (mas ? '<p class="px-3 py-2 text-[11px] text-slate-400 text-center bg-slate-50">Hay más resultados: escribe otra palabra para afinar (ej. el tamaño)</p>' : '');
@@ -1447,10 +1448,8 @@ function onSearchKey(e){
   if(abierta && (e.key === 'ArrowDown' || e.key === 'ArrowUp')){
     e.preventDefault();
     const n = S._ddLista.length;
-    S._ddIdx = e.key === 'ArrowDown' ? ((S._ddIdx ?? -1) + 1) % n : ((S._ddIdx ?? 0) - 1 + n) % n;
-    dd.querySelectorAll('.dd-item').forEach(el => el.classList.toggle('ring-2', Number(el.dataset.i) === S._ddIdx));
-    dd.querySelectorAll('.dd-item').forEach(el => el.classList.toggle('ring-indigo-400', Number(el.dataset.i) === S._ddIdx));
-    dd.querySelector(`.dd-item[data-i="${S._ddIdx}"]`)?.scrollIntoView({ block: 'nearest' });
+    const i = S._ddIdx ?? -1;
+    marcarDD(e.key === 'ArrowDown' ? (i < 0 ? 0 : (i + 1) % n) : (i <= 0 ? n - 1 : i - 1), true);
     return;
   }
   if(e.key === 'Escape' && abierta){ dd.classList.add('hidden'); return; }
@@ -1461,6 +1460,23 @@ function onSearchKey(e){
     if(abierta && S._ddIdx >= 0 && S._ddLista[S._ddIdx]){ selectFromDropdown(S._ddLista[S._ddIdx].barcode); return; }
     doSearch();
   }
+}
+/* Resalta (fuerte) el renglón elegido con flechas o con el mouse: uno solo a la vez */
+function marcarDD(i, desplazar){
+  const dd = g('searchDropdown'); if(!dd) return;
+  S._ddIdx = i;
+  dd.querySelectorAll('.dd-item').forEach(el => {
+    const on = Number(el.dataset.i) === i;
+    el.classList.toggle('dd-sel', on);
+    el.setAttribute('aria-selected', on ? 'true' : 'false');
+  });
+  if(desplazar) dd.querySelector(`.dd-item[data-i="${i}"]`)?.scrollIntoView({ block: 'nearest' });
+}
+/* Solo cuando el mouse de verdad se mueve: si la lista aparece debajo del
+   cursor quieto, Enter no debe escoger ese renglón por accidente. */
+function ddHover(e, i){
+  if(!(e.movementX || e.movementY) || S._ddIdx === i) return;
+  marcarDD(i, false);
 }
 function selectFromDropdown(barcode) {
   g('searchDropdown').classList.add('hidden');
@@ -3479,10 +3495,11 @@ function deleteParkedSale(id){
    GENERIC CONFIRM MODAL (Promise-based)
 ════════════════════════════════════ */
 let _confirmCb=null;
-function confirmAction({title='¿Estás seguro?', msg='Esta acción no se puede deshacer.', okLabel='Confirmar', icon='⚠️'}={}){
+function confirmAction({title='¿Estás seguro?', msg='Esta acción no se puede deshacer.', okLabel='Confirmar', cancelLabel='Cancelar', icon='⚠️'}={}){
   g('confirmTitle').textContent=title;
   g('confirmMsg').textContent=msg;
   g('confirmOkBtn').textContent=okLabel;
+  if(g('confirmCancelBtn')) g('confirmCancelBtn').textContent=cancelLabel;
   g('confirmIcon').textContent=icon;
   g('confirmModal').classList.remove('hidden');
   return new Promise(res=>{ _confirmCb=res; });
@@ -5285,6 +5302,8 @@ async function showSaleDetail(id){
         <div><p class="text-slate-400 text-xs">Método de pago</p><p class="font-semibold text-sm">${methodLabel}</p></div>
         ${s.payMethod==='cash'?`<div><p class="text-slate-400 text-xs">Cambio</p><p class="font-semibold text-sm">${fmt(s.change||0)}</p></div>`:''}
       </div>
+      ${s.mp&&s.mp.manual?`<div class="bg-amber-50 border border-amber-200 text-amber-800 text-xs rounded-lg px-3 py-2 mb-3"><i class="fa-solid fa-hand mr-1"></i>Pago con terminal confirmado a mano por el cajero (Mercado Pago no lo confirmó). Revísalo en tu app de Mercado Pago.</div>`:''}
+      ${s.mp&&s.mp.paymentId?`<p class="text-[11px] text-slate-400 mb-3 font-mono">Pago Mercado Pago #${esc(String(s.mp.paymentId))}</p>`:''}
       <div class="bg-slate-50 rounded-xl overflow-hidden mb-4">
         <table class="w-full text-xs sm:text-sm">
           <thead class="bg-slate-100"><tr>
@@ -7007,7 +7026,13 @@ function updateMarginHint(){
    UTILITIES
 ════════════════════════════════════ */
 const g   = id => document.getElementById(id);
-const fmt = n  => new Intl.NumberFormat('es-MX',{style:'currency',currency:'MXN'}).format(n||0);
+/* Pesos siempre como «$1,234.50», sin depender del idioma de Windows/navegador
+   (en algunas PCs Intl caía a «1.234,50 $»). */
+const fmt = n => {
+  const v = Math.round((Number(n) || 0) * 100) / 100;
+  const [ent, dec] = Math.abs(v).toFixed(2).split('.');
+  return (v < 0 ? '-' : '') + '$' + ent.replace(/\B(?=(\d{3})+(?!\d))/g, ',') + '.' + dec;
+};
 const esc = s  => String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
 const delay= ms=> new Promise(r=>setTimeout(r,ms));
 function show(id){ g(id)?.classList.remove('hidden'); }

@@ -42,7 +42,19 @@
       #adminSide .adm-foot > *{margin-top:0!important}
       #adminSide .adm-foot button{flex:1;justify-content:center;font-size:.75rem;padding-left:.25rem;padding-right:.25rem}
     }
-  </style>
+  
+  /* Lista del buscador (F10): renglón elegido y renglón bajo el mouse bien visibles */
+  #searchDropdown .dd-item{border-left:6px solid transparent;border-bottom:1px solid #e2e8f0}
+  #searchDropdown .dd-item.dd-promo{background:#fffbeb}
+  #searchDropdown .dd-item:hover{background:#e0e7ff;border-left-color:#6366f1}
+  #searchDropdown .dd-item.dd-sel{background:#4338ca;border-left-color:#fbbf24;box-shadow:inset 0 0 0 2px #312e81}
+  #searchDropdown .dd-item.dd-sel p,
+  #searchDropdown .dd-item.dd-sel span:not(.bg-amber-400){color:#fff !important}
+  #searchDropdown .dd-item.dd-sel p.text-\[10px\]{color:#c7d2fe !important}
+  #searchDropdown .dd-item.dd-sel span.text-red-500{color:#991b1b !important;background:#fee2e2;padding:0 5px;border-radius:4px}
+  #searchDropdown .dd-item.dd-sel .dd-enter{display:inline-flex}
+  #searchDropdown .dd-enter{display:none}
+</style>
 </head>
 <body class="bg-slate-100 overflow-hidden">
 
@@ -1953,7 +1965,7 @@
     <h3 id="confirmTitle" class="font-bold text-slate-800 text-lg mb-1">¿Estás seguro?</h3>
     <p id="confirmMsg" class="text-slate-500 text-sm mb-5 whitespace-pre-line">Esta acción no se puede deshacer.</p>
     <div class="flex gap-3">
-      <button onclick="_confirmResolve(false)" class="flex-1 bg-slate-100 hover:bg-slate-200 text-slate-700 py-3 rounded-xl font-semibold text-sm min-h-[48px]">Cancelar</button>
+      <button id="confirmCancelBtn" onclick="_confirmResolve(false)" class="flex-1 bg-slate-100 hover:bg-slate-200 text-slate-700 py-3 rounded-xl font-semibold text-sm min-h-[48px]">Cancelar</button>
       <button id="confirmOkBtn" onclick="_confirmResolve(true)" class="flex-1 bg-red-500 hover:bg-red-600 text-white py-3 rounded-xl font-semibold text-sm min-h-[48px]">Confirmar</button>
     </div>
   </div>
@@ -2186,9 +2198,11 @@
     <p id="mpWaitAmount" class="text-3xl font-black text-slate-900 num mt-1"></p>
     <p id="mpWaitMsg" class="text-sm text-slate-500 mt-2 leading-snug"></p>
     <p id="mpWaitDevice" class="text-[11px] text-slate-400 font-mono mt-2 break-anywhere"></p>
+    <p id="mpWaitDiag" class="hidden text-[11px] text-slate-500 mt-1 break-anywhere"></p>
     <div class="mt-4 space-y-2">
       <button id="mpWaitCancel" onclick="cancelarCobroMP()" class="w-full bg-red-50 hover:bg-red-100 text-red-600 py-3 rounded-xl font-bold text-sm min-h-[48px]"><i class="fa-solid fa-ban mr-1.5"></i>Cancelar cobro</button>
       <button id="mpWaitCheck" onclick="verificarCobroMP()" class="hidden w-full bg-sky-600 hover:bg-sky-700 disabled:opacity-60 text-white py-3 rounded-xl font-bold text-sm min-h-[48px]"><i class="fa-solid fa-rotate mr-1.5"></i><span id="mpWaitCheckLbl">Ya lo cancelé en la terminal</span></button>
+      <button id="mpWaitCharged" onclick="yaCobroTerminalMP()" class="hidden w-full bg-emerald-600 hover:bg-emerald-700 disabled:opacity-60 text-white py-3 rounded-xl font-bold text-sm min-h-[48px]"><i class="fa-solid fa-receipt mr-1.5"></i><span id="mpWaitChargedLbl">La terminal ya cobró (APROBADO)</span></button>
       <button id="mpWaitManual" onclick="registrarManualMP()" class="hidden w-full bg-emerald-600 hover:bg-emerald-700 text-white py-3 rounded-xl font-bold text-sm min-h-[48px]"><i class="fa-solid fa-check mr-1.5"></i>La terminal dice APROBADO</button>
       <button id="mpWaitDiscard" onclick="descartarRevisionMP()" class="hidden w-full bg-slate-100 hover:bg-slate-200 text-slate-700 py-3 rounded-xl font-bold text-sm min-h-[48px]">No se cobró</button>
       <button id="mpWaitRetry" onclick="reintentarCobroMP()" class="hidden w-full bg-indigo-600 hover:bg-indigo-700 text-white py-3 rounded-xl font-bold text-sm min-h-[48px]"><i class="fa-solid fa-rotate-left mr-1.5"></i>Elegir otra forma de pago</button>
@@ -2709,10 +2723,10 @@
 <!-- ▌TICKET PARA IMPRIMIR ▐ — solo se ve al imprimir desde el navegador -->
 <div id="ticketPrint" aria-hidden="true"></div>
 
-<script src="app.js?v=20261031b"></script>
-<script src="mp-point.js?v=20261031b"></script>
-<script src="importar-excel.js?v=20261031b"></script>
-<script src="promos.js?v=20261031b"></script>
-<script src="devoluciones.js?v=20261031b"></script>
+<script src="app.js?v=20261117a"></script>
+<script src="mp-point.js?v=20261117a"></script>
+<script src="importar-excel.js?v=20261117a"></script>
+<script src="promos.js?v=20261117a"></script>
+<script src="devoluciones.js?v=20261117a"></script>
 </body>
 </html>

@@ -246,8 +246,10 @@ function crearCobroPorDocumento(id, ref, datos){
    Cobro en pantalla: cada 2 s el primer minuto, luego cada 4 s y después cada 8 s.
    Cobros en segundo plano («seguir sin esperar»): cada 15 s hasta 30 min.
    Así no depende de que llegue el webhook ni hay que tocar «Verificar». */
+S.mpDiag = {};                 // id → { ts, mpStatus, error }: lo que contestó MP la última vez
 function tickConsultaMP(){
-  if(!S.mpDirectoOK || !TENANT || !S.user || !isOnline()) return;
+  if(!TENANT || !S.user || !isOnline()) return;
+  if(!S.mpDirectoOK){ tickRespaldoMP(); return; }
   const ahora = Date.now();
   const pend = leerPendMP();
   Object.keys(S.mpUnsubs).forEach(id => {
@@ -261,13 +263,40 @@ function tickConsultaMP(){
     MP_POLL[id] = ahora + (activo ? (edad < 60e3 ? 2000 : edad < 180e3 ? 4000 : 8000) : 15000);
     S.mpEnVuelo[id] = true;
     mpLlamar('estado', { intentId:id })
+      .then(r => {
+        S.mpDiag[id] = { ts:Date.now(), mpStatus:r.mpStatus || r.status, error:r.error || null };
+        asegurarDatoMP(id, r.status);
+      })
       .catch(e => {
+        S.mpDiag[id] = { ts:Date.now(), error: mpCodigo(e) || e.message || 'sin respuesta' };
         if(MP_RESPALDO.includes(mpCodigo(e)) && ++_mpFallas >= 3) S.mpDirectoOK = false;   // no publicada
       })
       .finally(() => { delete S.mpEnVuelo[id]; });
   });
 }
 setInterval(tickConsultaMP, 500);
+
+/* Respaldo: la función directa no contesta. Se le pide al servidor que
+   consulte a Mercado Pago escribiendo en el documento (lo atiende el
+   disparador). Solo el cobro en pantalla: cada 6 s el primer minuto, luego 12 s. */
+const MP_RESPALDO_POLL = {};
+function tickRespaldoMP(){
+  const c = S.mpCobro; if(!c) return;
+  const st = (S.mpDatos[c.id] || {}).status;
+  if(st !== 'sent') return;
+  const ahora = Date.now(), edad = ahora - c.desde;
+  if(edad < 5000 || edad > 30 * 60e3 || (MP_RESPALDO_POLL[c.id] || 0) > ahora) return;
+  MP_RESPALDO_POLL[c.id] = ahora + (edad < 60e3 ? 6000 : 12000);
+  mpCol().doc(c.id).update({ checkRequestedAt: FS.FieldValue.serverTimestamp() })
+    .then(() => { S.mpDiag[c.id] = { ...(S.mpDiag[c.id] || {}), ts:Date.now(), respaldo:true }; })
+    .catch(e => { S.mpDiag[c.id] = { ts:Date.now(), respaldo:true, error:e.code || e.message }; });
+}
+
+/* ¿Volvió la función directa? (se publicó después, o fue un corte de internet) */
+setInterval(() => {
+  if(S.mpDirectoOK || !S.user || !TENANT || !isOnline() || !mpModuloActivo()) return;
+  mpLlamar('ping').then(() => { S.mpDirectoOK = true; _mpFallas = 0; }).catch(() => {});
+}, 90e3);
 
 /* Mantener la función despierta: el primer cobro no espera el arranque en frío */
 let _mpUltimoPing = 0;
@@ -283,17 +312,38 @@ setInterval(() => mpPrecalentar(true), 5 * 60e3);
 /* ════════════════════════════════════
    5) LISTENER EN TIEMPO REAL
 ════════════════════════════════════ */
+function procesarDatoMP(id, d){
+  S.mpDatos[id] = d;
+  if(S.mpCobro && S.mpCobro.id === id){ S.mpUltimoDato = d; pintarEsperaMP(d); }
+  if(d.status === 'paid') registrarCobroMP(id, d, false);
+  else if(MP_FINALES.includes(d.status)) terminarCobroMP(id, d);
+  /* 'review' se queda escuchando: el webhook todavía puede confirmarlo */
+}
 function escucharCobroMP(id){
   if(S.mpUnsubs[id]) return;
   S.mpUnsubs[id] = mpCol().doc(id).onSnapshot(snap => {
     if(!snap.exists) return;
-    const d = snap.data();
-    S.mpDatos[id] = d;
-    if(S.mpCobro && S.mpCobro.id === id){ S.mpUltimoDato = d; pintarEsperaMP(d); }
-    if(d.status === 'paid') registrarCobroMP(id, d, false);
-    else if(MP_FINALES.includes(d.status)) terminarCobroMP(id, d);
-    /* 'review' se queda escuchando: el webhook todavía puede confirmarlo */
-  }, err => console.warn('Cobro con terminal:', err.code || err.message));
+    procesarDatoMP(id, snap.data());
+  }, err => {
+    /* El listener se cayó (red, sesión): se vuelve a abrir. Sin esto la caja
+       nunca se enteraría del pago aunque el servidor ya lo tenga. */
+    console.warn('Cobro con terminal:', err.code || err.message);
+    if(!S.mpUnsubs[id]) return;                      // ya se soltó a propósito
+    delete S.mpUnsubs[id];
+    setTimeout(() => { if(leerPendMP()[id] || (S.mpCobro && S.mpCobro.id === id)) escucharCobroMP(id); }, 3000);
+  });
+}
+/* La consulta directa dijo un estado distinto al que tiene la caja: si el aviso
+   en tiempo real no llega en 2.5 s, se lee el documento directo del servidor. */
+function asegurarDatoMP(id, status){
+  if(!status || status === 'sent' || status === 'pending' || status === 'sending') return;
+  setTimeout(async () => {
+    if(S.mpRegistrados.has(id) || (S.mpDatos[id] || {}).status === status) return;
+    try{
+      const snap = await mpCol().doc(id).get({ source:'server' });
+      if(snap.exists && !S.mpRegistrados.has(id)) procesarDatoMP(id, snap.data());
+    }catch(e){ console.warn('Cobro con terminal (lectura directa):', e.code || e.message); }
+  }, 2500);
 }
 function soltarCobroMP(id){
   try{ S.mpUnsubs[id] && S.mpUnsubs[id](); }catch(e){}
@@ -305,11 +355,14 @@ function soltarCobroMP(id){
 /* paid → registrar la venta con la lógica existente + ticket */
 async function registrarCobroMP(id, d, manual){
   if(S.mpRegistrados.has(id)) return;
-  const pend = leerPendMP()[id];
-  soltarCobroMP(id);
   const esActual = !!(S.mpCobro && S.mpCobro.id === id);
+  /* El respaldo local puede faltar (almacenamiento lleno o borrado, otra pestaña).
+     Si es el cobro que está en pantalla, sus datos siguen en memoria: se registra
+     igual. La venta usa el id «mp_<cobro>», así que nunca se duplica. */
+  const pend = leerPendMP()[id]
+    || (esActual ? { pago:S.mpCobro.pago, deviceId:S.mpCobro.deviceId, amount:S.mpCobro.amount } : null);
+  soltarCobroMP(id);
   if(!pend){                                   // ya se había registrado antes (otra pestaña / recarga)
-    if(esActual){ S.mpCobro = null; ocultarModalMP(); }
     return;
   }
   S.mpRegistrados.add(id);
@@ -318,7 +371,8 @@ async function registrarCobroMP(id, d, manual){
   const pago = { ...pend.pago, mp: {
     intentId: id, mpId: d.mpId || null, api: d.mpApi || null,
     paymentId: d.paymentId || null, deviceId: pend.deviceId,
-    monto: pend.amount, tarjeta: d.tipoTarjeta || null, manual: !!manual
+    monto: pend.amount, tarjeta: d.tipoTarjeta || null, manual: !!manual,
+    ...(d.ligadoAMano ? { ligado:true } : {})
   }};
   if(!esActual) showToast('La terminal aprobó un cobro pendiente: venta registrada ✅','success');
 
@@ -347,7 +401,7 @@ function terminarCobroMP(id, d){
 ════════════════════════════════════ */
 const MP_UI = {
   pending : { t:'Enviando a la terminal…',            m:'Conectando con Mercado Pago.',                                    i:'fa-spinner fa-spin',        c:'bg-sky-100 text-sky-600' },
-  sent    : { t:'Pasa la tarjeta en la terminal',      m:'Si el cobro no aparece en la pantalla, toca «Cobrar» en la terminal.', i:'fa-credit-card',       c:'bg-sky-100 text-sky-600' },
+  sent    : { t:'Pasa la tarjeta en la terminal',      m:'El monto ya va en la terminal. NO lo teclees a mano: si lo tecleas, el POS no se entera del pago.', i:'fa-credit-card', c:'bg-sky-100 text-sky-600' },
   paid    : { t:'Pago aprobado',                       m:'Registrando la venta…',                                           i:'fa-circle-check',           c:'bg-emerald-100 text-emerald-600' },
   rejected: { t:'Pago rechazado',                      m:'Pide otra tarjeta o cobra con otra forma de pago.',               i:'fa-circle-xmark',           c:'bg-red-100 text-red-600' },
   canceled: { t:'Cobro cancelado',                     m:'No se cobró nada.',                                               i:'fa-ban',                    c:'bg-slate-100 text-slate-500' },
@@ -389,12 +443,39 @@ function pintarEsperaMP(d){
   g('mpWaitAmount').textContent = fmt(c.amount);
   g('mpWaitDevice').textContent = (c.pago.payMethod === 'mixed' ? 'Efectivo aparte: ' + fmt(c.pago.cashPortion) + ' · ' : '')
                                 + 'Terminal ' + c.deviceId;
+  /* Qué dijo Mercado Pago la última vez y hace cuánto (para saber si la caja sí está preguntando) */
+  const dg = (S.mpDiag || {})[c.id];
+  const diag = g('mpWaitDiag');
+  if(diag){
+    let t = '';
+    if(enCurso && dg){
+      const seg = Math.max(0, Math.round((Date.now() - dg.ts) / 1000));
+      const MPST = { created:'creada', at_terminal:'en la terminal', action_required:'esperando acción en la terminal',
+                     processed:'pagada', failed:'rechazada', canceled:'cancelada', expired:'expiró', sent:'esperando', paid:'pagada' };
+      t = dg.error ? 'Sin respuesta de Mercado Pago (' + dg.error + ')'
+        : dg.respaldo ? 'Consultando por respaldo'
+        : 'Mercado Pago: ' + (MPST[dg.mpStatus] || dg.mpStatus || '—');
+      t += ' · hace ' + seg + ' s';
+    } else if(enCurso && st === 'sent' && espera > 8000){
+      t = S.mpDirectoOK ? 'Esperando respuesta de Mercado Pago…' : 'Consultando por respaldo…';
+    }
+    diag.textContent = t;
+    diag.classList.toggle('hidden', !t);
+    diag.classList.toggle('text-red-500', !!(dg && dg.error));
+  }
 
   const ver = (id, on) => g(id)?.classList.toggle('hidden', !on);
   ver('mpWaitCancel',  activo && enCurso && !d.cancelRequested);
   /* "Ya lo cancelé" / "Verificar": le pide al servidor que le pregunte a Mercado Pago.
      Solo tiene sentido cuando el cobro ya llegó a Mercado Pago (status sent). */
-  ver('mpWaitCheck',   activo && st === 'sent' && (cancelando || espera > 20000));
+  ver('mpWaitCheck',   activo && (st === 'review' || (st === 'sent' && (cancelando || espera > 20000))));
+  /* La terminal aprobó pero aquí sigue esperando: buscar el pago en Mercado Pago */
+  const buscando = !!S.mpBuscando && Date.now() - S.mpBuscando < 20000;
+  ver('mpWaitCharged', activo && st === 'sent' && !cancelando && espera > 12000);
+  if(g('mpWaitCharged')){
+    g('mpWaitCharged').disabled = buscando;
+    g('mpWaitChargedLbl').textContent = buscando ? 'Buscando el pago en Mercado Pago…' : 'La terminal ya cobró (APROBADO)';
+  }
   if(g('mpWaitCheckLbl')) g('mpWaitCheckLbl').textContent = cancelando ? 'Ya lo cancelé en la terminal' : 'Verificar con Mercado Pago';
   if(g('mpWaitCheck')) g('mpWaitCheck').disabled = consultando;
   ver('mpWaitManual',  activo && st === 'review');
@@ -438,6 +519,8 @@ async function verificarCobroMP(){
     try{
       const r = await mpLlamar('estado', { intentId:c.id, forzar:true });
       S.mpVerificando = 0;
+      S.mpDiag[c.id] = { ts:Date.now(), mpStatus:r.mpStatus || r.status, error:r.error || null };
+      asegurarDatoMP(c.id, r.status);
       if(r.status === 'sent' && !(S.mpUltimoDato && S.mpUltimoDato.cancelRequested)){
         showToast('Mercado Pago dice que el cobro sigue esperando en la terminal','info');
       }
@@ -458,6 +541,60 @@ async function verificarCobroMP(){
   }
   setTimeout(() => { if(S.mpCobro && S.mpCobro.id === c.id) pintarEsperaMP(S.mpUltimoDato); }, 8200);
 }
+/* «La terminal ya cobró»: la terminal dijo APROBADO pero aquí sigue esperando.
+   1) El servidor vuelve a preguntar por la orden y, si sigue pendiente, busca en
+      Mercado Pago un pago aprobado del mismo monto (pasa cuando el monto se
+      tecleó a mano en la terminal). Si lo encuentra, lo liga a esta venta.
+   2) Si no lo encuentra, el cajero puede registrar la venta a mano (queda marcada). */
+async function yaCobroTerminalMP(){
+  const c = S.mpCobro; if(!c) return;
+  const ok = await confirmAction({ title:'¿La terminal dice APROBADO?',
+    msg:'Se buscará el pago en Mercado Pago y se ligará a esta venta.\n\nÚsalo solo si la terminal mostró o imprimió APROBADO.',
+    okLabel:'Sí, buscar el pago', icon:'💳' });
+  if(!ok || !S.mpCobro || S.mpCobro.id !== c.id) return;
+
+  if(S.mpDirectoOK){
+    S.mpBuscando = Date.now(); pintarEsperaMP(S.mpUltimoDato);
+    let r = null;
+    try{ r = await mpLlamar('buscarPago', { intentId:c.id }); }
+    catch(e){
+      if(!MP_RESPALDO.includes(mpCodigo(e))){ S.mpBuscando = 0; pintarEsperaMP(S.mpUltimoDato); showToast('No se pudo consultar: ' + e.message,'error'); return; }
+    }
+    S.mpBuscando = 0;
+    if(S.mpRegistrados.has(c.id) || !S.mpCobro || S.mpCobro.id !== c.id) return;   // ya llegó por el aviso
+    if(r && r.status === 'paid'){
+      showToast(r.porOrden ? 'Mercado Pago confirmó el pago ✅' : 'Pago encontrado en Mercado Pago y ligado a la venta ✅','success');
+      asegurarDatoMP(c.id, 'paid');
+      return;
+    }
+    if(r && r.status && !MP_EN_CURSO.includes(r.status)){ asegurarDatoMP(c.id, r.status); return; }
+    pintarEsperaMP(S.mpUltimoDato);
+    if(r){
+      const ok2 = await confirmAction({ title:'Mercado Pago no tiene ese pago',
+        msg:'No hay un pago APROBADO de ' + fmt(c.amount) + ' desde que se mandó el cobro.\n\n'
+          + 'Puede tardar unos segundos: espera y vuelve a intentar. Registra a mano SOLO si tienes el comprobante de APROBADO en la mano.',
+        okLabel:'Registrar a mano', cancelLabel:'Esperar', icon:'⚠️' });
+      if(ok2) registrarAManoMP(c);
+      return;
+    }
+  }
+  /* Sin la consulta directa: solo queda registrarla a mano */
+  const ok3 = await confirmAction({ title:'Registrar la venta a mano',
+    msg:'No se puede consultar a Mercado Pago desde esta caja. Regístrala solo si tienes el comprobante de APROBADO de la terminal.',
+    okLabel:'Registrar venta', icon:'💳' });
+  if(ok3) registrarAManoMP(c);
+}
+/* Registra la venta como pagada con tarjeta (marcada «a mano») y cancela la
+   orden sobrante para que no se quede esperando en la terminal. */
+async function registrarAManoMP(c){
+  if(!c || S.mpRegistrados.has(c.id)) return;
+  await registrarCobroMP(c.id, S.mpUltimoDato || {}, true);
+  try{
+    if(S.mpDirectoOK) await mpLlamar('cancelar', { intentId:c.id });
+    else await mpCol().doc(c.id).update({ cancelRequested:true, cancelRequestedAt: FS.FieldValue.serverTimestamp() });
+  }catch(e){ console.warn('No se canceló la orden sobrante:', mpCodigo(e) || e.message); }
+}
+
 /* Tras un rechazo: volver a la ventana de cobro (que sigue abierta debajo) */
 function reintentarCobroMP(){
   const c = S.mpUltimo; S.mpUltimo = null;

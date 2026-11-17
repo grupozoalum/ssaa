@@ -172,10 +172,12 @@ function impConstruir(){
     IMP.filas.slice(IMP.encabezado + 1).forEach(r => {
       if(!r || r.every(v => String(v ?? '').trim() === '')) return;
       R.total++;
-      const code = impCodigo(cel(r, 'barcode'));
+      const original = impCodigo(cel(r, 'barcode'));
+      const code = codigoSeguro(original);          // «A / B» → «A - B» (Firestore no acepta «/»)
+      if(original.includes('/')) R.codigoInvalido++;
       const name = String(cel(r, 'name') ?? '').trim();
       if(!code || !name){ R.sinDatos++; return; }
-      if(!impCodigoValido(code)){ R.codigoInvalido++; return; }
+      if(!impCodigoValido(code)){ R.sinDatos++; return; }
       if(porCodigo.has(code)) R.duplicados++;
       porCodigo.set(code, {
         code,
@@ -255,7 +257,7 @@ function impPintar(){
     R.negativos && conStock ? chip(impMiles(R.negativos) + ' con existencia negativa → 0', 'bg-amber-100 text-amber-700') : '',
     R.duplicados ? chip(impMiles(R.duplicados) + ' códigos repetidos (queda el último)', 'bg-slate-100 text-slate-600') : '',
     R.sinDatos ? chip(impMiles(R.sinDatos) + ' sin código o nombre (se omiten)', 'bg-slate-100 text-slate-600') : '',
-    R.codigoInvalido ? chip(impMiles(R.codigoInvalido) + ' con «/» en el código (se omiten)', 'bg-red-100 text-red-600') : '',
+    R.codigoInvalido ? chip(impMiles(R.codigoInvalido) + ' con «/» en el código (se guardan con «-»)', 'bg-amber-100 text-amber-700') : '',
   ].join('');
 
   g('imp_preview').innerHTML = IMP.registros.slice(0, 8).map(x => `
